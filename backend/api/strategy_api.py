@@ -100,6 +100,7 @@ def _discover_strategy_classes() -> List[Dict[str, Any]]:
                     "description": inspect.getdoc(obj) or "",
                     "type": "python",
                     "status": "active",
+                    "size": stat.st_size,
                     "created_at": created_at,
                     "updated_at": created_at,
                 }

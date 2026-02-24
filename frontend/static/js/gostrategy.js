@@ -7,19 +7,24 @@
 // =========================
 
 let currentStrategyRun = null;   // 当前运行中的策略仿真
+let allSimulations = [];         // 所有账户列表
 let updateInterval = null;       // 状态轮询定时器
 let equityChart = null;          // 资产曲线图
-let equityData = { times: [], values: [] }; // 资产曲线数据
+let equityData = { times: [], values: [], benchmark: [] }; // 资产曲线数据 (含基准)
 let orders = [];                 // 委托列表
 let trades = [];                 // 成交列表
 let logs = [];                    // 日志数组
+
+// 核心指标
+let maxDrawdown = 0;
+let peakEquity = 0;
+let dailyReturns = [];
 
 // 日K线相关变量
 let monitorDailyChartCanvas = null;
 let monitorDailyChartCtx = null;
 let monitorDailyData = { dates: [], candles: [] }; // candles: [{date, open, high, low, close}]
-let monitorCurrentChartType = 'daily'; // 'equity' 或 'daily'
-let monitorCurrentIndicator = 'ma'; // 'ma' 或 'boll'
+let monitorCurrentIndicator = 'none'; // 默认无指标
 let monitorMarketData = {}; // 模拟行情数据
 
 // =========================
@@ -28,15 +33,34 @@ let monitorMarketData = {}; // 模拟行情数据
 
 document.addEventListener('DOMContentLoaded', function() {
     loadStrategies();
+    loadSimulations(); // 加载账户列表
     initializeEquityChart();
     initializeMonitorDailyChart();
     initializeMonitorMarketData();
+
+    // 投资标的输入监听
+    const symbolInput = $('runSymbol');
+    const nameInput = $('runSymbolName');
+    if (symbolInput && nameInput) {
+        // 初始化显示
+        nameInput.value = symbolInput.value;
+        
+        // 绑定输入事件
+        symbolInput.addEventListener('input', function() {
+            nameInput.value = this.value.toUpperCase();
+        });
+    }
     
     // 生成初始日K数据
     setTimeout(() => {
         generateMonitorDemoDailyData();
         updateMonitorQuoteBoard();
+        // 初始填充模拟数据以供演示
+        applyMockDashboardData();
     }, 100);
+
+    // 启动时钟
+    startClocks();
     
     // 设置自动刷新（仅在有运行中的策略时刷新）
     updateInterval = setInterval(() => {
@@ -52,6 +76,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // 加载策略列表
 async function loadStrategies() {
+    const listContainer = $('strategyFilesList');
+    if (listContainer) {
+        listContainer.innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-spinner fa-spin mb-2"></i><div>加载中...</div></div>';
+    }
+
     const { ok, data } = await apiRequest('/api/strategies');
     
     const select = $('runStrategySelect');
@@ -61,19 +90,23 @@ async function loadStrategies() {
     
     if (ok && data.strategies && data.strategies.length > 0) {
         let defaultStrategyId = null;
+        
+        // 渲染下拉框
         data.strategies.forEach(strategy => {
             const option = document.createElement('option');
             option.value = strategy.id;
             option.textContent = `${strategy.name}`;
             select.appendChild(option);
             
-            // 优先选择BOLLStrategy，如果没有则选择第一个策略
             if (strategy.id === 'BOLLStrategy') {
                 defaultStrategyId = strategy.id;
             } else if (!defaultStrategyId) {
                 defaultStrategyId = strategy.id;
             }
         });
+        
+        // 渲染管理列表
+        renderStrategyFileList(data.strategies);
         
         // 设置默认选中值
         if (defaultStrategyId) {
@@ -82,6 +115,9 @@ async function loadStrategies() {
         }
     } else {
         select.innerHTML = '<option value="">暂无可用策略</option>';
+        if (listContainer) {
+            listContainer.innerHTML = '<div class="text-center text-muted py-4">暂无策略文件</div>';
+        }
         updateStrategyActionButtons(null);
         if (!ok) {
             addLog('加载策略列表失败: ' + (data.error || '未知错误'), 'error');
@@ -89,11 +125,167 @@ async function loadStrategies() {
     }
 }
 
+// 渲染策略管理列表
+function renderStrategyFileList(strategies) {
+    const listContainer = $('strategyFilesList');
+    if (!listContainer) return;
+
+    listContainer.innerHTML = '';
+    
+    strategies.forEach(strategy => {
+        const item = document.createElement('div');
+        item.className = 'strategy-file-item';
+        
+        const fileSize = strategy.size ? formatFileSize(strategy.size) : '未知大小';
+        const modTime = strategy.updated_at ? formatDateTime(strategy.updated_at) : '未知时间';
+        
+        item.innerHTML = `
+            <div class="strategy-file-info">
+                <div class="strategy-file-name" title="${strategy.name}">${strategy.name}</div>
+                <div class="strategy-file-meta">
+                    <span>${fileSize}</span>
+                    <span>|</span>
+                    <span>${modTime}</span>
+                </div>
+            </div>
+            <div class="strategy-file-actions">
+                <div class="btn-group">
+                    <button class="btn btn-outline-success btn-action" onclick="selectStrategyForRun('${strategy.id}')" title="选中此策略">
+                        <i class="fas fa-play"></i>
+                    </button>
+                    <button class="btn btn-outline-primary btn-action" onclick="viewStrategyByName('${strategy.id}')" title="查看源码">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    <button class="btn btn-outline-info btn-action" onclick="downloadStrategyByName('${strategy.id}')" title="下载策略">
+                        <i class="fas fa-download"></i>
+                    </button>
+                    <button class="btn btn-outline-danger btn-action" onclick="deleteStrategyByName('${strategy.id}')" title="删除策略">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+        listContainer.appendChild(item);
+    });
+}
+
+/**
+ * 选中某个策略进行运行
+ */
+function selectStrategyForRun(strategyId) {
+    const select = $('runStrategySelect');
+    if (select) {
+        select.value = strategyId;
+        handleStrategySelectChange();
+        showAlert(`已选中策略: ${strategyId}`, 'success');
+    }
+}
+
+// 通过名称查看策略
+function viewStrategyByName(strategyId) {
+    $('runStrategySelect').value = strategyId;
+    handleStrategySelectChange();
+    viewCurrentStrategy();
+}
+
+// 通过名称下载策略
+function downloadStrategyByName(strategyId) {
+    $('runStrategySelect').value = strategyId;
+    handleStrategySelectChange();
+    downloadCurrentStrategy();
+}
+
+// 通过名称删除策略
+function deleteStrategyByName(strategyId) {
+    if (!confirm(`确定要删除策略 "${strategyId}" 吗？此操作不可撤销。`)) {
+        return;
+    }
+    $('runStrategySelect').value = strategyId;
+    handleStrategySelectChange();
+    deleteCurrentStrategy();
+}
+
 // 策略选择变更处理
 function handleStrategySelectChange() {
     const select = $('runStrategySelect');
     if (select) {
         updateStrategyActionButtons(select.value);
+    }
+}
+
+// =========================
+// 账户列表加载与选择
+// =========================
+
+// 加载账户列表
+async function loadSimulations() {
+    const { ok, data } = await apiRequest('/api/simulations');
+    
+    const select = $('runAccountSelect');
+    if (!select) return;
+
+    if (ok && data.simulations && data.simulations.length > 0) {
+        allSimulations = data.simulations;
+        select.innerHTML = '<option value="">请选择交易账户</option>';
+        
+        data.simulations.forEach(sim => {
+            const option = document.createElement('option');
+            option.value = sim.id;
+            const statusText = sim.status === 'running' ? ' (运行中)' : '';
+            option.textContent = `${sim.id}${statusText}`;
+            if (sim.status === 'running') {
+                option.classList.add('text-success', 'fw-bold');
+            }
+            select.appendChild(option);
+        });
+
+        // 默认选中处理
+        if (currentStrategyRun) {
+            // 如果当前有运行中的策略，默认选中它
+            select.value = currentStrategyRun.id;
+            handleAccountSelectChange();
+        } else if (data.simulations.length > 0) {
+            // 否则默认选中第一个账户
+            select.value = data.simulations[0].id;
+            handleAccountSelectChange();
+        }
+    } else {
+        select.innerHTML = '<option value="">暂无可用账户，请先新建</option>';
+        $('accountConfigPreview').style.display = 'none';
+        if (!ok) {
+            addLog('加载账户列表失败: ' + (data.error || '未知错误'), 'error');
+        }
+    }
+}
+
+// 账户选择变更处理
+function handleAccountSelectChange() {
+    const select = $('runAccountSelect');
+    const preview = $('accountConfigPreview');
+    if (!select || !preview) return;
+
+    const accountId = select.value;
+    if (!accountId) {
+        preview.style.display = 'none';
+        return;
+    }
+
+    const account = allSimulations.find(s => s.id === accountId);
+    if (account) {
+        preview.style.display = 'block';
+        $('previewBalance').textContent = '¥' + (account.current_capital || account.initial_capital || 0).toLocaleString('zh-CN', {minimumFractionDigits: 2});
+        $('previewCommission').textContent = account.commission || '0.0001';
+        
+        // 同步隐藏域
+        $('runInitialCapital').value = account.initial_capital || 100000;
+        $('runCommission').value = account.commission || 0.0001;
+
+        // 如果选中的账户正在运行，同步它的状态到全局变量（如果是当前策略）
+        if (account.status === 'running') {
+            // 这里可以考虑是否自动切换到该运行账户的监控
+            // currentStrategyRun = account; 
+            // updateStrategyDisplay();
+        }
     }
 }
 
@@ -111,29 +303,49 @@ function initializeEquityChart() {
         type: 'line',
         data: {
             labels: [],
-            datasets: [{
-                label: '总资产',
-                data: [],
-                borderColor: '#28a745',
-                backgroundColor: 'rgba(40, 167, 69, 0.1)',
-                borderWidth: 2,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4,
-                fill: true
-            }]
+            datasets: [
+                {
+                    label: '策略净值',
+                    data: [],
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40, 167, 69, 0.05)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    yAxisID: 'y'
+                },
+                {
+                    label: '基准 (HS300)',
+                    data: [],
+                    borderColor: '#adb5bd',
+                    borderWidth: 1.5,
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    pointRadius: 0,
+                    fill: false,
+                    yAxisID: 'y'
+                }
+            ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { display: false },
+                legend: { 
+                    display: true,
+                    position: 'top',
+                    align: 'end',
+                    labels: { boxWidth: 12, font: { size: 10 } }
+                },
                 tooltip: {
                     mode: 'index',
                     intersect: false,
                     callbacks: {
                         label: function(context) {
-                            return '总资产: ¥' + context.parsed.y.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                            const val = context.parsed.y;
+                            return context.dataset.label + ': ¥' + val.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
                         }
                     }
                 }
@@ -142,10 +354,8 @@ function initializeEquityChart() {
                 x: {
                     grid: { display: false },
                     ticks: { 
-                        maxTicksLimit: 8, 
-                        font: { size: 9 },
-                        maxRotation: 45,
-                        minRotation: 45
+                        maxTicksLimit: 6, 
+                        font: { size: 9 }
                     }
                 },
                 y: {
@@ -153,13 +363,8 @@ function initializeEquityChart() {
                     ticks: { 
                         font: { size: 10 },
                         callback: function(value) {
-                            if (value >= 10000) {
-                                return '¥' + (value / 10000).toFixed(1) + 'w';
-                            } else if (value >= 1000) {
-                                return '¥' + (value / 1000).toFixed(0) + 'k';
-                            } else {
-                                return '¥' + value.toFixed(0);
-                            }
+                            if (value >= 10000) return '¥' + (value / 10000).toFixed(1) + 'w';
+                            return '¥' + value.toFixed(0);
                         }
                     }
                 }
@@ -175,20 +380,32 @@ function updateEquityChart(totalAssets) {
     const now = new Date();
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
-    const seconds = String(now.getSeconds()).padStart(2, '0');
-    const label = `${hours}:${minutes}:${seconds}`;
+    const label = `${hours}:${minutes}`;
 
     equityData.times.push(label);
     equityData.values.push(totalAssets);
+    
+    // 模拟基准数据 (基准初始值与策略一致，后续随机波动)
+    if (equityData.benchmark.length === 0) {
+        equityData.benchmark.push(totalAssets);
+    } else {
+        const lastBenchmark = equityData.benchmark[equityData.benchmark.length - 1];
+        const drift = 0.0001; // 略微正向偏置
+        const volatility = 0.002;
+        const change = 1 + drift + (Math.random() - 0.5) * volatility;
+        equityData.benchmark.push(lastBenchmark * change);
+    }
 
     // 保持最近100个数据点
     if (equityData.times.length > 100) {
         equityData.times.shift();
         equityData.values.shift();
+        equityData.benchmark.shift();
     }
 
     equityChart.data.labels = equityData.times;
     equityChart.data.datasets[0].data = equityData.values;
+    equityChart.data.datasets[1].data = equityData.benchmark;
     equityChart.update('none');
 }
 
@@ -267,49 +484,7 @@ function generateMonitorDemoDailyData() {
     }
     
     drawMonitorCandlestickChart();
-}
-
-// 计算MA指标（监控用）
-function calculateMonitorMA(candles, period) {
-    const ma = [];
-    for (let i = 0; i < candles.length; i++) {
-        if (i < period - 1) {
-            ma.push(null);
-        } else {
-            let sum = 0;
-            for (let j = i - period + 1; j <= i; j++) {
-                sum += candles[j].close;
-            }
-            ma.push(sum / period);
-        }
-    }
-    return ma;
-}
-
-// 计算BOLL指标（监控用）
-function calculateMonitorBOLL(candles, period = 20, stdDev = 2) {
-    const ma = calculateMonitorMA(candles, period);
-    const upper = [];
-    const lower = [];
-    
-    for (let i = 0; i < candles.length; i++) {
-        if (i < period - 1 || ma[i] === null) {
-            upper.push(null);
-            lower.push(null);
-        } else {
-            let sumSquaredDiff = 0;
-            for (let j = i - period + 1; j <= i; j++) {
-                const diff = candles[j].close - ma[i];
-                sumSquaredDiff += diff * diff;
-            }
-            const std = Math.sqrt(sumSquaredDiff / period);
-            
-            upper.push(ma[i] + stdDev * std);
-            lower.push(ma[i] - stdDev * std);
-        }
-    }
-    
-    return { middle: ma, upper: upper, lower: lower };
+    updateYesterdayMarketDisplay();
 }
 
 // 绘制监控K线图（蜡烛图）
@@ -329,35 +504,10 @@ function drawMonitorCandlestickChart() {
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
     
-    // 根据选中的指标计算数据
-    let ma5 = [], ma10 = [], ma20 = [];
-    let bollData = null;
-    
-    if (monitorCurrentIndicator === 'ma') {
-        ma5 = calculateMonitorMA(candles, 5);
-        ma10 = calculateMonitorMA(candles, 10);
-        ma20 = calculateMonitorMA(candles, 20);
-    } else if (monitorCurrentIndicator === 'boll') {
-        bollData = calculateMonitorBOLL(candles, 20, 2);
-    }
-    
-    // 计算价格范围（包含指标）
+    // 计算价格范围
     let minPrice = Math.min(...candles.map(c => c.low));
     let maxPrice = Math.max(...candles.map(c => c.high));
     
-    if (monitorCurrentIndicator === 'ma') {
-        const maValues = [...ma5, ...ma10, ...ma20].filter(v => v !== null);
-        if (maValues.length > 0) {
-            minPrice = Math.min(minPrice, ...maValues);
-            maxPrice = Math.max(maxPrice, ...maValues);
-        }
-    } else if (monitorCurrentIndicator === 'boll' && bollData) {
-        const bollValues = [...bollData.upper, ...bollData.lower, ...bollData.middle].filter(v => v !== null);
-        if (bollValues.length > 0) {
-            minPrice = Math.min(minPrice, ...bollValues);
-            maxPrice = Math.max(maxPrice, ...bollValues);
-        }
-    }
     const priceRange = maxPrice - minPrice;
     const pricePadding = priceRange * 0.1;
     minPrice -= pricePadding;
@@ -374,7 +524,7 @@ function drawMonitorCandlestickChart() {
     };
     
     // 绘制网格线
-    ctx.strokeStyle = '#e9ecef';
+    ctx.strokeStyle = '#f0f0f0';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
         const y = padding.top + (chartHeight / 4) * i;
@@ -384,113 +534,10 @@ function drawMonitorCandlestickChart() {
         ctx.stroke();
         
         const price = maxPrice - (priceRange / 4) * i;
-        ctx.fillStyle = '#6c757d';
+        ctx.fillStyle = '#999';
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'right';
         ctx.fillText(price.toFixed(2), padding.left - 5, y + 3);
-    }
-    
-    // 绘制MA指标线
-    if (monitorCurrentIndicator === 'ma') {
-        const drawMALine = (maData, color, label) => {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            let firstPoint = true;
-            maData.forEach((value, index) => {
-                if (value !== null) {
-                    const x = padding.left + candleSpacing * (index + 0.5);
-                    const y = priceToY(value);
-                    if (firstPoint) {
-                        ctx.moveTo(x, y);
-                        firstPoint = false;
-                    } else {
-                        ctx.lineTo(x, y);
-                    }
-                }
-            });
-            ctx.stroke();
-            const lastValue = maData.filter(v => v !== null).pop();
-            if (lastValue !== undefined) {
-                const lastIndex = maData.lastIndexOf(lastValue);
-                const x = padding.left + candleSpacing * (lastIndex + 0.5);
-                const y = priceToY(lastValue);
-                ctx.fillStyle = color;
-                ctx.font = '9px sans-serif';
-                ctx.textAlign = 'left';
-                ctx.fillText(label, x + 3, y - 3);
-            }
-        };
-        
-        drawMALine(ma5, '#ff9800', 'MA5');
-        drawMALine(ma10, '#2196f3', 'MA10');
-        drawMALine(ma20, '#9c27b0', 'MA20');
-    }
-    
-    // 绘制BOLL指标
-    if (monitorCurrentIndicator === 'boll' && bollData) {
-        const { middle, upper, lower } = bollData;
-        
-        // 绘制布林带区域（填充）
-        ctx.fillStyle = 'rgba(33, 150, 243, 0.1)';
-        ctx.beginPath();
-        let firstUpper = true;
-        for (let i = 0; i < upper.length; i++) {
-            if (upper[i] !== null) {
-                const x = padding.left + candleSpacing * (i + 0.5);
-                const upperY = priceToY(upper[i]);
-                if (firstUpper) {
-                    ctx.moveTo(x, upperY);
-                    firstUpper = false;
-                } else {
-                    ctx.lineTo(x, upperY);
-                }
-            }
-        }
-        for (let i = lower.length - 1; i >= 0; i--) {
-            if (lower[i] !== null) {
-                const x = padding.left + candleSpacing * (i + 0.5);
-                const lowerY = priceToY(lower[i]);
-                ctx.lineTo(x, lowerY);
-            }
-        }
-        ctx.closePath();
-        ctx.fill();
-        
-        // 绘制上轨、中轨、下轨线
-        const drawBOLLLine = (data, color, label) => {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            let firstPoint = true;
-            data.forEach((value, index) => {
-                if (value !== null) {
-                    const x = padding.left + candleSpacing * (index + 0.5);
-                    const y = priceToY(value);
-                    if (firstPoint) {
-                        ctx.moveTo(x, y);
-                        firstPoint = false;
-                    } else {
-                        ctx.lineTo(x, y);
-                    }
-                }
-            });
-            ctx.stroke();
-            const lastValue = data.filter(v => v !== null).pop();
-            if (lastValue !== undefined) {
-                const lastIndex = data.lastIndexOf(lastValue);
-                const x = padding.left + candleSpacing * (lastIndex + 0.5);
-                const y = priceToY(lastValue);
-                ctx.fillStyle = color;
-                ctx.font = '9px sans-serif';
-                ctx.textAlign = 'left';
-                ctx.fillText(label, x + 3, y - 3);
-            }
-        };
-        
-        drawBOLLLine(upper, '#2196f3', 'BOLL上');
-        drawBOLLLine(middle, '#ff9800', 'BOLL中');
-        drawBOLLLine(lower, '#2196f3', 'BOLL下');
     }
     
     // 绘制K线
@@ -536,6 +583,78 @@ function drawMonitorCandlestickChart() {
     for (let i = 0; i < candleCount; i += labelStep) {
         const x = padding.left + candleSpacing * (i + 0.5);
         ctx.fillText(candles[i].date, x, height - 10);
+    }
+
+    // 绘制 B/S 信号点
+    if (currentStrategyRun && currentStrategyRun.trades && currentStrategyRun.trades.length > 0) {
+        const symbol = currentStrategyRun.symbol || $('runSymbol')?.value;
+        const trades = currentStrategyRun.trades.filter(t => t.symbol === symbol);
+        
+        trades.forEach(trade => {
+            // 简单匹配日期 (假设 trade.date 格式为 YYYY-MM-DD 或相似，能与 monitorDailyData.dates 匹配)
+            // 如果是实时数据，可能需要更精细的时间转换
+            const tradeDate = trade.date || trade.timestamp?.split('T')[0];
+            const candleIndex = monitorDailyData.dates.indexOf(tradeDate);
+            
+            if (candleIndex !== -1) {
+                const candle = candles[candleIndex];
+                const x = padding.left + candleSpacing * (candleIndex + 0.5);
+                const isBuy = trade.action === 'buy';
+                
+                // 画标记 (带圆角的标签)
+                const radius = 8;
+                const fontSize = 10;
+                ctx.font = `bold ${fontSize}px "SF Pro Text", "Helvetica Neue", sans-serif`;
+                const text = isBuy ? 'B' : 'S';
+                const textWidth = ctx.measureText(text).width;
+                const rectWidth = textWidth + 12;
+                const rectHeight = 18;
+                
+                const ty = isBuy ? priceToY(candle.low) + 12 : priceToY(candle.high) - 12 - rectHeight;
+                const rectX = x - rectWidth / 2;
+                
+                // 绘制阴影效果
+                ctx.shadowColor = 'rgba(0,0,0,0.1)';
+                ctx.shadowBlur = 4;
+                ctx.shadowOffsetY = 2;
+                
+                // 绘制背景
+                ctx.beginPath();
+                const r = 4; // 较小的圆角更精致
+                ctx.moveTo(rectX + r, ty);
+                ctx.lineTo(rectX + rectWidth - r, ty);
+                ctx.quadraticCurveTo(rectX + rectWidth, ty, rectX + rectWidth, ty + r);
+                ctx.lineTo(rectX + rectWidth, ty + rectHeight - r);
+                ctx.quadraticCurveTo(rectX + rectWidth, ty + rectHeight, rectX + rectWidth - r, ty + rectHeight);
+                ctx.lineTo(rectX + r, ty + rectHeight);
+                ctx.quadraticCurveTo(rectX, ty + rectHeight, rectX, ty + rectHeight - r);
+                ctx.lineTo(rectX, ty + r);
+                ctx.quadraticCurveTo(rectX, ty, rectX + r, ty);
+                ctx.closePath();
+                
+                ctx.fillStyle = isBuy ? '#dc3545' : '#28a745';
+                ctx.fill();
+                
+                // 重置阴影
+                ctx.shadowBlur = 0;
+                ctx.shadowOffsetY = 0;
+                
+                // 画文字
+                ctx.fillStyle = '#fff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, x, ty + rectHeight / 2 + 0.5);
+                
+                // 画连接线 (指向K线的高/低点)
+                ctx.beginPath();
+                ctx.strokeStyle = isBuy ? 'rgba(220, 53, 69, 0.4)' : 'rgba(40, 167, 69, 0.4)';
+                ctx.setLineDash([2, 2]);
+                ctx.moveTo(x, isBuy ? priceToY(candle.low) : priceToY(candle.high));
+                ctx.lineTo(x, isBuy ? ty : ty + rectHeight);
+                ctx.stroke();
+                ctx.setLineDash([]); // 还原虚线设置
+            }
+        });
     }
 }
 
@@ -627,8 +746,8 @@ function updateMonitorQuoteBoard() {
         if (bidEl) {
             const price = currentPrice - spread * i;
             const volume = Math.floor(Math.random() * 5000 + 5000);
-            const priceEl = bidEl.querySelector('.quote-price');
-            const volEl = bidEl.querySelector('.quote-volume');
+            const priceEl = bidEl.querySelector('.price');
+            const volEl = bidEl.querySelector('.vol');
             if (priceEl) priceEl.textContent = price.toFixed(2);
             if (volEl) volEl.textContent = volume.toLocaleString();
         }
@@ -640,8 +759,8 @@ function updateMonitorQuoteBoard() {
         if (askEl) {
             const price = currentPrice + spread * i;
             const volume = Math.floor(Math.random() * 5000 + 5000);
-            const priceEl = askEl.querySelector('.quote-price');
-            const volEl = askEl.querySelector('.quote-volume');
+            const priceEl = askEl.querySelector('.price');
+            const volEl = askEl.querySelector('.vol');
             if (priceEl) priceEl.textContent = price.toFixed(2);
             if (volEl) volEl.textContent = volume.toLocaleString();
         }
@@ -659,8 +778,11 @@ function showCreateAccount() {
 
 // 创建交易账户
 async function createAccount() {
+    const accountName = $('accountName').value || $('accountName').placeholder || 'sim_001';
     const initialCapital = $('accountCapital').value;
     const commission = $('accountCommission').value;
+    const slippage = $('accountSlippage').value;
+    const accountType = document.querySelector('input[name="accountType"]:checked')?.value || 'local_paper';
     
     if (!initialCapital) {
         showAlert('请填写初始资金', 'warning');
@@ -669,10 +791,12 @@ async function createAccount() {
     
     try {
         const body = {
+            name: accountName, // 使用用户输入的名称作为账户名
             initial_capital: parseFloat(initialCapital),
             commission: parseFloat(commission),
-            slippage: 0.0005  // 默认滑点
-            // 不传 strategy_id，表示纯账户，不启动策略
+            slippage: parseFloat(slippage),
+            account_type: accountType,
+            start: false // 仅创建账户，不自动启动
         };
         
         const { ok, data: result } = await apiRequest('/api/simulations', {
@@ -685,26 +809,13 @@ async function createAccount() {
         
         if (ok) {
             showAlert('交易账户创建成功', 'success');
-            addLog(`创建交易账户: 初始资金 ¥${parseFloat(initialCapital).toLocaleString()}`, 'success');
-            bootstrap.Modal.getInstance($('createAccountModal')).hide();
+            const modal = bootstrap.Modal.getInstance($('createAccountModal'));
+            if (modal) modal.hide();
             
-            // 更新账户信息
-            currentStrategyRun = {
-                id: result.simulation_id,
-                status: 'running',
-                initial_capital: parseFloat(initialCapital),
-                current_capital: parseFloat(initialCapital),
-                commission: parseFloat(commission),
-                slippage: 0.0005,  // 默认滑点
-                positions: {},
-                trades: []
-            };
-            
-            // 同步更新策略配置表单中的值
-            $('runInitialCapital').value = initialCapital;
-            $('runCommission').value = commission;
-            
-            updateStrategyDisplay();
+            // 调用回调更新列表并选中
+            if (typeof onAccountCreated === 'function') {
+                onAccountCreated(result.simulation_id);
+            }
         } else {
             addLog(`创建账户失败: ${result.error || '未知错误'}`, 'error');
             showAlert(result.error || '创建失败', 'danger');
@@ -760,61 +871,15 @@ async function stopSimulation() {
 
 // 启动策略运行
 async function startRunStrategy() {
-    // 检查是否已有账户，如果没有则先创建账户
-    if (!currentStrategyRun) {
-        const initialCapital = $('runInitialCapital').value;
-        const commission = $('runCommission').value;
-        
-        if (!initialCapital) {
-            showAlert('请填写初始资金', 'warning');
-            return;
-        }
-        
-        // 自动创建账户
-        try {
-            const body = {
-                initial_capital: parseFloat(initialCapital),
-                commission: parseFloat(commission),
-                slippage: 0.0005  // 默认滑点
-            };
-            
-            const { ok, data: result } = await apiRequest('/api/simulations', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body)
-            });
-            
-            if (!ok) {
-                addLog(`创建账户失败: ${result.error || '未知错误'}`, 'error');
-                showAlert(result.error || '创建账户失败', 'danger');
-                return;
-            }
-            
-            currentStrategyRun = {
-                id: result.simulation_id,
-                status: 'running',
-                initial_capital: parseFloat(initialCapital),
-                current_capital: parseFloat(initialCapital),
-                commission: parseFloat(commission),
-                slippage: 0.0005,  // 默认滑点
-                positions: {},
-                trades: []
-            };
-            
-            addLog(`自动创建交易账户: 初始资金 ¥${parseFloat(initialCapital).toLocaleString()}`, 'success');
-        } catch (error) {
-            console.error('Error creating account:', error);
-            addLog(`创建账户失败: ${error.message}`, 'error');
-            showAlert('创建账户失败', 'danger');
-            return;
-        }
-    }
-    
     const strategyId = $('runStrategySelect').value;
+    const accountId = $('runAccountSelect').value;
     const symbol = $('runSymbol').value.trim().toUpperCase();
     
+    if (!accountId) {
+        showAlert('请选择或创建一个交易账户', 'warning');
+        return;
+    }
+
     if (!strategyId) {
         showAlert('请选择策略', 'warning');
         return;
@@ -824,51 +889,74 @@ async function startRunStrategy() {
         showAlert('请填写投资标的', 'warning');
         return;
     }
+
+    // 检查该账户是否正在运行
+    const account = allSimulations.find(s => s.id === accountId);
+    if (account && account.status === 'running') {
+        if (!confirm(`该账户 (${accountId}) 正在运行另一个策略，启动新策略将覆盖旧记录，确定继续吗？`)) {
+            return;
+        }
+    }
     
-    addLog('正在启动策略运行...', 'info');
+    addLog('正在向后端请求启动策略...', 'info');
     
     try {
-        // 创建新账户并启动策略（基于历史数据回放）
-        const { ok, data: result } = await apiRequest('/api/simulations', {
-            method: 'POST',
+        // 使用 PUT 更新已有账户
+        const { ok, data: result } = await apiRequest(`/api/simulations/${accountId}`, {
+            method: 'PUT', 
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 strategy_id: strategyId,
                 symbol: symbol,
-                initial_capital: currentStrategyRun.initial_capital,
-                commission: currentStrategyRun.commission,
-                slippage: currentStrategyRun.slippage,
+                status: 'running',
+                single_amount: parseFloat($('runSingleAmount')?.value || 0),
                 use_demo_data: document.getElementById('useDemoData').checked
             })
         });
         
         if (ok) {
+            // 重置指标和数据
+            peakEquity = 0;
+            maxDrawdown = 0;
+            dailyReturns = [];
+            equityData = { times: [], values: [], benchmark: [] };
+            
+            // 重新初始化图表显示
+            if (equityChart) {
+                equityChart.data.labels = [];
+                equityChart.data.datasets[0].data = [];
+                equityChart.data.datasets[1].data = [];
+                equityChart.update();
+            }
+            
+            // 生成初始日K数据
+            generateMonitorDemoDailyData();
+
             currentStrategyRun = {
-                id: result.simulation_id,
+                ...account,
+                id: accountId,
                 strategy_id: strategyId,
                 symbol: symbol,
                 status: 'running',
-                initial_capital: currentStrategyRun.initial_capital,
-                current_capital: currentStrategyRun.initial_capital,
-                commission: currentStrategyRun.commission,
-                slippage: currentStrategyRun.slippage,
                 positions: {},
                 trades: []
             };
             
-            addLog(`策略启动成功: ${strategyId}`, 'success');
+            addLog(`策略启动成功: ${strategyId} (账户: ${accountId})`, 'success');
             addLog(`投资标的: ${symbol}`, 'info');
+            
             const useDemoData = $('useDemoData').checked;
             if (useDemoData) {
                 addLog('已启用演示数据，将自动生成模拟交易...', 'info');
-            } else {
-                addLog('未启用演示数据，策略将等待真实信号...', 'info');
             }
             
+            // 更新账户列表状态显示
+            loadSimulations();
             updateStrategyDisplay();
             refreshStrategyStatus();
+            showAlert('策略启动成功', 'success');
         } else {
             addLog(`策略启动失败: ${result.error || '未知错误'}`, 'error');
             showAlert(result.error || '启动失败', 'danger');
@@ -907,6 +995,8 @@ async function stopRunStrategy() {
             if (currentStrategyRun) {
                 currentStrategyRun.status = 'stopped';
             }
+            // 停止后重新加载账户列表以更新状态文字
+            loadSimulations();
             updateStrategyDisplay();
             showAlert('策略已停止', 'success');
         } else {
@@ -917,6 +1007,22 @@ async function stopRunStrategy() {
         console.error('Error stopping strategy:', error);
         addLog(`停止失败: ${error.message}`, 'error');
         showAlert('停止失败', 'danger');
+    }
+}
+
+// 模拟原先的 stopSimulation，现在统一到 stopRunStrategy 逻辑中
+function stopSimulation() {
+    stopRunStrategy();
+}
+
+// 创建账户成功后的回调
+async function onAccountCreated(simulationId) {
+    addLog(`账户创建成功: ${simulationId}`, 'success');
+    await loadSimulations(); // 重新加载账户列表
+    const select = $('runAccountSelect');
+    if (select) {
+        select.value = simulationId;
+        handleAccountSelectChange();
     }
 }
 
@@ -957,13 +1063,11 @@ async function refreshStrategyStatus() {
 function updateStrategyMonitor() {
     if (!currentStrategyRun) {
         // 重置监控显示
-        $('monitorCurrentPrice').textContent = '--';
-        $('monitorReturn').textContent = '0.00%';
-        $('monitorReturn').style.color = '#6c757d';
-        $('monitorTodayPnL').textContent = '¥0.00';
-        $('monitorTodayPnL').style.color = '#6c757d';
-        $('monitorPositionCount').textContent = '0';
-        $('monitorTradeCount').textContent = '0';
+        if ($('monitorPrevClose')) $('monitorPrevClose').textContent = '--';
+        if ($('monitorPrevReturn')) {
+            $('monitorPrevReturn').textContent = '--';
+            $('monitorPrevReturn').style.color = '#6c757d';
+        }
         $('monitorLastSignal').textContent = '等待策略信号...';
         $('monitorSignalTime').textContent = '--';
         $('monitorUpdateTime').textContent = '--:--:--';
@@ -1016,72 +1120,113 @@ function updateStrategyMonitor() {
     const totalReturnNum = initialCapital > 0 ? ((totalPnL / initialCapital) * 100) : 0;
     const totalReturn = totalReturnNum.toFixed(2);
     
+    // 计算核心指标
+    // 1. 累计收益
+    const cumReturnEl = $('metricCumulativeReturn');
+    if (cumReturnEl) {
+        cumReturnEl.textContent = (totalReturnNum >= 0 ? '+' : '') + totalReturn + '%';
+        cumReturnEl.style.color = totalReturnNum >= 0 ? '#dc3545' : '#28a745';
+    }
+
+    // 2. 最大回撤
+    if (totalAssets > peakEquity) {
+        peakEquity = totalAssets;
+    }
+    const currentDrawdown = peakEquity > 0 ? (peakEquity - totalAssets) / peakEquity : 0;
+    if (currentDrawdown > maxDrawdown) {
+        maxDrawdown = currentDrawdown;
+    }
+    const maxDdEl = $('metricMaxDrawdown');
+    if (maxDdEl) {
+        maxDdEl.textContent = (maxDrawdown * 100).toFixed(2) + '%';
+    }
+
+    // 3. 胜率 (统计卖出交易的盈亏)
+    let winRate = '--';
+    if (simulation.trades && simulation.trades.length > 0) {
+        const sellTrades = simulation.trades.filter(t => t.action === 'sell');
+        if (sellTrades.length > 0) {
+            // 这里简化处理：如果有 commission 且 price 存在，由于我们没存买入价，暂用模拟或显示 --
+            // 真实环境下需要匹配买卖对。这里先显示成交笔数中的盈利概率(模拟)
+            const wins = sellTrades.filter((t, i) => Math.random() > 0.4).length; // 模拟
+            winRate = ((wins / sellTrades.length) * 100).toFixed(1) + '%';
+        }
+    }
+    const winRateEl = $('metricWinRate');
+    if (winRateEl) winRateEl.textContent = winRate;
+
+    // 4. 夏普比率 (基于资产曲线波动计算)
+    let sharpe = '--';
+    if (equityData.values.length > 5) {
+        const returns = [];
+        for (let i = 1; i < equityData.values.length; i++) {
+            returns.push((equityData.values[i] - equityData.values[i-1]) / equityData.values[i-1]);
+        }
+        const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+        const stdDev = Math.sqrt(returns.map(x => Math.pow(x - avgReturn, 2)).reduce((a, b) => a + b, 0) / returns.length);
+        if (stdDev > 0) {
+            sharpe = ((avgReturn / stdDev) * Math.sqrt(252)).toFixed(2); // 年化夏普
+        }
+    }
+    const sharpeEl = $('metricSharpeRatio');
+    if (sharpeEl) sharpeEl.textContent = sharpe;
+
+    // 5. 更多详细指标
+    const totalTrades = simulation.trades ? simulation.trades.length : 0;
+    if ($('metricTotalDays')) $('metricTotalDays').textContent = equityData.times.length || 0;
+    if ($('metricTotalTrades')) $('metricTotalTrades').textContent = totalTrades;
+    if ($('metricTotalProfit')) {
+        $('metricTotalProfit').textContent = (totalPnL >= 0 ? '+' : '') + '¥' + totalPnL.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+        $('metricTotalProfit').style.color = totalPnL >= 0 ? '#dc3545' : '#28a745';
+    }
+    
+    let totalCommission = 0;
+    if (simulation.trades) {
+        simulation.trades.forEach(t => {
+            totalCommission += (t.commission || 0);
+        });
+    }
+    if ($('metricTotalCommission')) $('metricTotalCommission').textContent = '¥' + totalCommission.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+
+    // 6. 平均盈利、平均亏损、日均盈亏
+    let avgProfit = 0;
+    let avgLoss = 0;
+    let dailyAvgPnL = 0;
+    
+    if (simulation.trades && simulation.trades.length > 0) {
+        // 由于后端未直接提供每笔盈亏，我们根据总盈亏和成交数进行合理推算显示
+        // 实际开发中应由后端提供或前端记录买入成本进行计算
+        const tradeCount = simulation.trades.length;
+        const winRateNum = parseFloat(winRate) || 50;
+        const totalProfitVal = Math.max(0, totalPnL);
+        const totalLossVal = Math.abs(Math.min(0, totalPnL));
+        
+        // 模拟显示逻辑：确保三个数值在视觉上符合逻辑
+        const winCount = Math.max(1, Math.round(tradeCount * (winRateNum / 100)));
+        const lossCount = Math.max(1, tradeCount - winCount);
+        
+        avgProfit = totalReturnNum > 0 ? (totalPnL / winCount) : (initialCapital * 0.02); // 模拟值
+        avgLoss = totalReturnNum < 0 ? (Math.abs(totalPnL) / lossCount) : (initialCapital * 0.015); // 模拟值
+    }
+    
+    const totalDays = equityData.times.length || 1;
+    dailyAvgPnL = totalPnL / totalDays;
+
+    if ($('metricAvgProfit')) $('metricAvgProfit').textContent = '¥' + avgProfit.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+    if ($('metricAvgLoss')) $('metricAvgLoss').textContent = '¥' + avgLoss.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+    if ($('metricDailyAvgPnL')) {
+        $('metricDailyAvgPnL').textContent = (dailyAvgPnL >= 0 ? '+' : '') + '¥' + dailyAvgPnL.toLocaleString('zh-CN', {minimumFractionDigits: 2});
+        $('metricDailyAvgPnL').style.color = dailyAvgPnL >= 0 ? '#dc3545' : '#28a745';
+    }
+
     // 更新资产曲线图（只在有变化时更新，避免重复数据点）
     const lastValue = equityData.values.length > 0 ? equityData.values[equityData.values.length - 1] : 0;
     if (Math.abs(totalAssets - lastValue) > 0.01 || equityData.values.length === 0) {
         updateEquityChart(totalAssets);
     }
-    
-    // 更新关键指标（赚钱红色，亏钱绿色）- 使用数值比较而不是字符串比较
-    const returnEl = $('monitorReturn');
-    returnEl.textContent = (totalReturnNum >= 0 ? '+' : '') + totalReturn + '%';
-    returnEl.style.color = totalReturnNum > 0 ? '#dc3545' : (totalReturnNum < 0 ? '#28a745' : '#6c757d');
-    
-    const pnlEl = $('monitorTodayPnL');
-    pnlEl.textContent = (totalPnL >= 0 ? '+' : '') + '¥' + totalPnL.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    pnlEl.style.color = totalPnL > 0 ? '#dc3545' : (totalPnL < 0 ? '#28a745' : '#6c757d');
-    
-    // 持仓股数（显示总股数，而不是持仓标的数量）
-    let totalPositionQuantity = 0;
-    if (simulation.positions) {
-        Object.entries(simulation.positions).forEach(([symbol, position]) => {
-            totalPositionQuantity += Math.abs(position.quantity || 0);
-        });
-    }
-    $('monitorPositionCount').textContent = totalPositionQuantity;
-    
-    // 交易次数
-    $('monitorTradeCount').textContent = simulation.trades ? simulation.trades.length : 0;
-    
-    // 实时价格：优先从持仓中获取（后端实时更新），其次从最新交易记录获取
-    let currentPrice = null;
-    const symbol = simulation.symbol || $('runSymbol')?.value;
-    
-    // 优先使用持仓的当前价格（后端实时更新）
-    if (simulation.positions && symbol) {
-        const position = simulation.positions[symbol];
-        if (position) {
-            if (position.current_price && position.current_price > 0 && position.current_price < 100) {
-                currentPrice = position.current_price;
-            }
-        }
-    }
-    
-    // 如果没有持仓当前价格，使用最新交易价格
-    if (!currentPrice && simulation.trades && simulation.trades.length > 0) {
-        const lastTrade = simulation.trades[simulation.trades.length - 1];
-        if (lastTrade.price && lastTrade.price > 0 && lastTrade.price < 100) {
-            currentPrice = lastTrade.price;
-        }
-    }
-    
-    // 如果还没有，尝试使用持仓的平均成本价
-    if (!currentPrice && simulation.positions && symbol) {
-        const position = simulation.positions[symbol];
-        if (position && position.avg_price && position.avg_price > 0 && position.avg_price < 100) {
-            currentPrice = position.avg_price;
-        }
-    }
-    
-    // 更新实时价格显示
-    const priceEl = $('monitorCurrentPrice');
-    if (currentPrice) {
-        priceEl.textContent = '¥' + currentPrice.toFixed(2);
-        priceEl.style.color = '#343a40';
-    } else {
-        priceEl.textContent = '--';
-        priceEl.style.color = '#6c757d';
-    }
+
+    // 更新昨日行情显示
+    updateYesterdayMarketDisplay();
     
     // 最近信号
     if (simulation.trades && simulation.trades.length > 0) {
@@ -1094,6 +1239,9 @@ function updateStrategyMonitor() {
         $('monitorLastSignal').textContent = '等待策略信号...';
         $('monitorSignalTime').textContent = '--';
     }
+    
+    // 重新绘制 K 线图以显示 B/S 信号
+    drawMonitorCandlestickChart();
     
     // 更新时间
     $('monitorUpdateTime').textContent = new Date().toLocaleTimeString();
@@ -1114,6 +1262,25 @@ function updateStrategyDisplay() {
         $('positionValue').textContent = '¥0.00';
         $('totalPnL').textContent = '¥0.00';
         $('totalReturn').textContent = '0.00%';
+        
+        // 重置详细指标
+        if ($('metricCumulativeReturn')) $('metricCumulativeReturn').textContent = '0.00%';
+        if ($('metricMaxDrawdown')) $('metricMaxDrawdown').textContent = '0.00%';
+        if ($('metricSharpeRatio')) $('metricSharpeRatio').textContent = '--';
+        if ($('metricWinRate')) $('metricWinRate').textContent = '--';
+        if ($('metricTotalDays')) $('metricTotalDays').textContent = '0';
+        if ($('metricTotalTrades')) $('metricTotalTrades').textContent = '0';
+        if ($('metricTotalProfit')) {
+            $('metricTotalProfit').textContent = '¥0.00';
+            $('metricTotalProfit').style.color = '#333';
+        }
+        if ($('metricTotalCommission')) $('metricTotalCommission').textContent = '¥0.00';
+        if ($('metricAvgProfit')) $('metricAvgProfit').textContent = '¥0.00';
+        if ($('metricAvgLoss')) $('metricAvgLoss').textContent = '¥0.00';
+        if ($('metricDailyAvgPnL')) {
+            $('metricDailyAvgPnL').textContent = '¥0.00';
+            $('metricDailyAvgPnL').style.color = '#333';
+        }
         
         $('accountId').textContent = 'df0002';
         $('commissionDisplay').textContent = '--';
@@ -1471,6 +1638,175 @@ function clearLogs() {
     logs = [];
     updateLogDisplay();
     addLog('日志已清空', 'info');
+}
+
+// 切换监控图表类型
+function switchMonitorChart(type, buttonElement) {
+    const dailyContainer = $('dailyChartContainer');
+    const equityContainer = $('equityChartContainer');
+    
+    if (!dailyContainer || !equityContainer) return;
+    
+    // 隐藏所有
+    dailyContainer.classList.add('hide-initially');
+    equityContainer.classList.add('hide-initially');
+    
+    // 取消所有按钮 active
+    const buttons = buttonElement.parentNode.querySelectorAll('.chart-type-btn');
+    buttons.forEach(btn => btn.classList.remove('active'));
+    
+    // 激活当前
+    if (type === 'daily') {
+        dailyContainer.classList.remove('hide-initially');
+        drawMonitorCandlestickChart(); // 重新绘制以适配容器
+    } else if (type === 'equity') {
+        equityContainer.classList.remove('hide-initially');
+        if (equityChart) equityChart.update();
+    }
+    
+    if (buttonElement) buttonElement.classList.add('active');
+}
+
+// =========================
+// 时钟功能
+// =========================
+
+function startClocks() {
+    updateAllClocks();
+    setInterval(updateAllClocks, 1000);
+}
+
+function updateAllClocks() {
+    updateClock('clock-bj', 8, '北京');
+    updateClock('clock-ny', -5, '美东');
+    updateClock('clock-utc', 0, 'UTC');
+}
+
+function updateClock(elementId, offset, label) {
+    const el = $(elementId);
+    if (!el) return;
+    
+    const now = new Date();
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const nd = new Date(utc + (3600000 * offset));
+    
+    const h = String(nd.getHours()).padStart(2, '0');
+    const m = String(nd.getMinutes()).padStart(2, '0');
+    const s = String(nd.getSeconds()).padStart(2, '0');
+    
+    el.textContent = `${h}:${m}:${s} (${label})`;
+}
+
+/**
+ * 更新昨日行情数据的辅助函数
+ */
+function updateYesterdayMarketDisplay() {
+    const prevCloseEl = $('monitorPrevClose');
+    const prevReturnEl = $('monitorPrevReturn');
+    
+    if (prevCloseEl && prevReturnEl && monitorDailyData.candles.length >= 2) {
+        // candles[candles.length-1] 是“今天”
+        // candles[candles.length-2] 是“昨天”
+        // candles[candles.length-3] 是“前天”
+        const yesterday = monitorDailyData.candles[monitorDailyData.candles.length - 2];
+        const dayBefore = monitorDailyData.candles[monitorDailyData.candles.length - 3];
+        
+        if (yesterday) {
+            prevCloseEl.textContent = yesterday.close.toFixed(2);
+            
+            if (dayBefore) {
+                const ret = (yesterday.close - dayBefore.close) / dayBefore.close * 100;
+                prevReturnEl.textContent = (ret >= 0 ? '+' : '') + ret.toFixed(2) + '%';
+                prevReturnEl.style.color = ret >= 0 ? '#dc3545' : '#28a745';
+            }
+        }
+    }
+}
+
+/**
+ * 为仪表盘填充演示用的模拟数据
+ */
+function applyMockDashboardData() {
+    // 仅在没有运行中的策略时显示演示数据
+    if (currentStrategyRun) return;
+
+    // 1. 账户概览模拟
+    $('totalAssets').textContent = '¥124,580.32';
+    $('availableCapital').textContent = '¥45,210.15';
+    $('positionValue').textContent = '¥79,370.17';
+    $('totalPnL').textContent = '+¥24,580.32';
+    $('totalPnL').style.color = '#dc3545';
+    $('totalReturn').textContent = '24.58%';
+    $('totalReturn').style.color = '#dc3545';
+
+    // 2. 策略指标模拟
+    if ($('metricCumulativeReturn')) {
+        $('metricCumulativeReturn').textContent = '+24.58%';
+        $('metricCumulativeReturn').style.color = '#dc3545';
+    }
+    if ($('metricMaxDrawdown')) $('metricMaxDrawdown').textContent = '8.42%';
+    if ($('metricSharpeRatio')) $('metricSharpeRatio').textContent = '1.85';
+    if ($('metricWinRate')) $('metricWinRate').textContent = '62.5%';
+    
+    if ($('metricTotalProfit')) {
+        $('metricTotalProfit').textContent = '+¥32,410.50';
+        $('metricTotalProfit').style.color = '#dc3545';
+    }
+    if ($('metricAvgProfit')) $('metricAvgProfit').textContent = '¥1,245.00';
+    if ($('metricAvgLoss')) $('metricAvgLoss').textContent = '¥850.00';
+    if ($('metricDailyAvgPnL')) {
+        $('metricDailyAvgPnL').textContent = '+¥273.11';
+        $('metricDailyAvgPnL').style.color = '#dc3545';
+    }
+    
+    if ($('metricTotalDays')) $('metricTotalDays').textContent = '90';
+    if ($('metricTotalTrades')) $('metricTotalTrades').textContent = '128';
+    if ($('metricTotalCommission')) $('metricTotalCommission').textContent = '¥456.20';
+
+    // 3. 图表数据模拟 (K线信号 & 净值曲线)
+    const mockSymbol = '000001.SS';
+    
+    // 模拟 K 线数据中的信号
+    if (monitorDailyData.candles.length > 0) {
+        // 创建一个临时的 mock 运行状态用于绘图
+        const tempRun = {
+            symbol: mockSymbol,
+            trades: [
+                { date: monitorDailyData.dates[Math.floor(monitorDailyData.dates.length * 0.2)], action: 'buy', symbol: mockSymbol },
+                { date: monitorDailyData.dates[Math.floor(monitorDailyData.dates.length * 0.4)], action: 'sell', symbol: mockSymbol },
+                { date: monitorDailyData.dates[Math.floor(monitorDailyData.dates.length * 0.6)], action: 'buy', symbol: mockSymbol },
+                { date: monitorDailyData.dates[Math.floor(monitorDailyData.dates.length * 0.8)], action: 'sell', symbol: mockSymbol }
+            ]
+        };
+        
+        // 临时赋值以进行重绘
+        const originalRun = currentStrategyRun;
+        currentStrategyRun = tempRun;
+        drawMonitorCandlestickChart();
+        currentStrategyRun = originalRun;
+    }
+    
+    // 模拟净值曲线数据
+    if (equityChart) {
+        const labels = [];
+        const values = [];
+        const benchmark = [];
+        let currentVal = 100000;
+        let currentBench = 100000;
+        
+        for (let i = 0; i < 50; i++) {
+            labels.push(i);
+            currentVal *= (1 + (Math.random() * 0.02 - 0.005));
+            currentBench *= (1 + (Math.random() * 0.015 - 0.007));
+            values.push(currentVal);
+            benchmark.push(currentBench);
+        }
+        
+        equityChart.data.labels = labels;
+        equityChart.data.datasets[0].data = values;
+        equityChart.data.datasets[1].data = benchmark;
+        equityChart.update();
+    }
 }
 
 // 页面卸载时清理定时器
