@@ -333,14 +333,17 @@
                                         <th>已成交</th>
                                         <th>状态</th>
                                         <th>时间</th>
+                                        <th>策略</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="ordersTableBody">
                                     <tr>
-                                        <td colspan="10" class="text-center text-muted py-5">
-                                            <i class="fas fa-list-alt fa-2x mb-3 opacity-3"></i>
-                                            <div>暂无委托</div>
+                                        <td colspan="11" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-list-alt fa-2x"></i>
+                                                <div>暂无委托</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -361,13 +364,16 @@
                                         <th>数量</th>
                                         <th>金额</th>
                                         <th>时间</th>
+                                        <th>策略</th>
                                     </tr>
                                 </thead>
                                 <tbody id="tradesTableBody">
                                     <tr>
-                                        <td colspan="9" class="text-center text-muted py-5">
-                                            <i class="fas fa-check-circle fa-2x mb-3 opacity-3"></i>
-                                            <div>暂无成交</div>
+                                        <td colspan="10" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-check-circle fa-2x"></i>
+                                                <div>暂无成交</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -392,9 +398,11 @@
                                 </thead>
                                 <tbody id="positionTableBody">
                                     <tr>
-                                        <td colspan="9" class="text-center text-muted py-5">
-                                            <i class="fas fa-inbox fa-2x mb-3 opacity-3"></i>
-                                            <div>暂无持仓</div>
+                                        <td colspan="9" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-inbox fa-2x"></i>
+                                                <div>暂无持仓</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>

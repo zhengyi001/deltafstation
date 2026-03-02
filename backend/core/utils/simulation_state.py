@@ -5,6 +5,7 @@ from datetime import datetime
 
 from backend.core.strategy_engine import StrategyEngine
 from backend.core.simulation_engine import SimulationEngine
+from backend.core.utils.engine_state import inject_strategy_id
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -20,9 +21,12 @@ def config_path(sid):
 def stop_same_account(account_id: str) -> None:
     """停掉该账户上的已有实例（仿真或 StrategyEngine），并持久化 state 到配置。"""
     if StrategyEngine.is_running(account_id):
+        run_info = StrategyEngine.get_run_info(account_id)
+        strategy_id = run_info.get("strategy_id") if run_info else None
         state = StrategyEngine.stop(account_id)
         if state and os.path.exists(config_path(account_id)):
             try:
+                inject_strategy_id(state, strategy_id)
                 with open(config_path(account_id), 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
                 cfg.update(state)
@@ -40,6 +44,7 @@ def stop_same_account(account_id: str) -> None:
         SimulationEngine.stop(account_id)
         if state and os.path.exists(config_path(account_id)):
             try:
+                inject_strategy_id(state, "manual")
                 with open(config_path(account_id), 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
                 cfg.update(state)

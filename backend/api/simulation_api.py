@@ -19,6 +19,8 @@ from datetime import datetime
 
 from backend.core.simulation_engine import SimulationEngine
 from backend.core.strategy_engine import StrategyEngine
+from backend.core.utils.engine_state import inject_strategy_id
+from backend.core.utils.engine_state import inject_strategy_id
 
 simulation_bp = Blueprint('simulation', __name__)
 
@@ -120,6 +122,7 @@ def _stop_others_except(account_id: str) -> None:
                 with open(_config_path(sid), 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
                 if state:
+                    inject_strategy_id(state, "manual")
                     _apply_state_to_config(cfg, state)
                     cfg['engine_state'] = state
                 cfg['status'] = 'stopped'
@@ -185,6 +188,9 @@ def get_simulation_status(simulation_id):
         if run_info:
             config['last_signal'] = run_info.get('last_signal')
             config['last_signal_label'] = run_info.get('last_signal_label')
+            sid = run_info.get('strategy_id')
+            if sid:
+                inject_strategy_id(config, sid)
         config['status'] = 'running'
     elif config.get('status') == 'running':
         # 配置里标记为 running，但引擎没有在跑，修正为 stopped 并写回一次
@@ -278,14 +284,19 @@ def stop_simulation(simulation_id):
     if not os.path.exists(_config_path(simulation_id)):
         return jsonify({'error': 'Simulation not found'}), 404
     state = None
+    strategy_id = None
     if SimulationEngine.is_running(simulation_id):
         state = SimulationEngine.get_state(simulation_id)
         SimulationEngine.stop(simulation_id)
+        strategy_id = "manual"
     elif StrategyEngine.is_running(simulation_id):
+        run_info = StrategyEngine.get_run_info(simulation_id)
+        strategy_id = run_info.get("strategy_id") if run_info else None
         state = StrategyEngine.stop(simulation_id)
     with open(_config_path(simulation_id), 'r', encoding='utf-8') as f:
         config = json.load(f)
     if state:
+        inject_strategy_id(state, strategy_id)
         _apply_state_to_config(config, state)
         config['engine_state'] = state
     config['status'] = 'stopped'

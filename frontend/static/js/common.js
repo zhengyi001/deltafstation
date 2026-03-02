@@ -105,9 +105,9 @@ function formatDateTime(dateString) {
 
 // ========== 3. 表格空状态渲染 ==========
 
-/** 统一表格空状态行 HTML 生成。 */
+/** 统一表格空状态行 HTML 生成（垂直居中）。 */
 function renderEmptyState(colspan, icon, text) {
-    return `<tr><td colspan="${colspan}" class="text-center text-muted py-5"><i class="fas ${icon} fa-2x mb-3" style="opacity: 0.3;"></i><div>${text}</div></td></tr>`;
+    return `<tr><td colspan="${colspan}" class="text-center text-muted empty-state-cell"><div class="empty-state-placeholder"><i class="fas ${icon} fa-2x"></i><div>${text}</div></div></td></tr>`;
 }
 
 // ========== 4. 策略管理公共函数 ==========

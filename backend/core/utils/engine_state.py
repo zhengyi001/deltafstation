@@ -1,5 +1,14 @@
 """引擎 state 转换 - SimulationEngine 与 StrategyEngine 共用。"""
-from typing import Any
+from typing import Any, Optional
+
+
+def inject_strategy_id(state: dict, strategy_id: Optional[str]) -> None:
+    """为 state 中的 trades 和 orders 注入 strategy_id，便于交易数据与策略关联。"""
+    sid = strategy_id if strategy_id else "manual"
+    for t in state.get("trades") or []:
+        t["strategy_id"] = sid
+    for o in state.get("orders") or []:
+        o["strategy_id"] = sid
 
 
 def _ts_str(ts: Any) -> str:

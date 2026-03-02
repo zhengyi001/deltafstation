@@ -33,10 +33,12 @@ class StrategyEngine:
     @classmethod
     def start(cls, account_id: str, strategy_id: str, symbol: str, initial_capital: float,
               commission: float = 0.001, signal_interval: str = "1d", lookback_bars: int = 100,
-              interval: float = 10.0) -> None:
+              interval: float = 10.0, order_amount: Optional[float] = None) -> None:
         if account_id in cls._runs:
             cls.stop(account_id)
         strat = load_strategy_class(strategy_id)(name=strategy_id)
+        if order_amount is not None:
+            strat.order_amount = order_amount
         engine = LiveEngine(symbol=symbol, interval=interval, lookback_bars=lookback_bars, signal_interval=signal_interval)
         engine.set_trade_gateway("paper", initial_capital=initial_capital, commission=commission)
         engine.add_strategy(strat)

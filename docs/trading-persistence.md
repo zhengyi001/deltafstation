@@ -14,9 +14,13 @@ When persisting account state, the snapshot includes:
 
 - `current_capital`
 - `positions`
-- `trades`
-- `orders`
+- `trades` (each item has `strategy_id` for association)
+- `orders` (each item has `strategy_id` for association)
 - `frozen_capital`
+
+Trade/order records are tagged with `strategy_id` before persistence:
+- StrategyEngine: uses the running strategy's id
+- SimulationEngine (manual): uses `"manual"`
 
 The snapshot is written to:
 

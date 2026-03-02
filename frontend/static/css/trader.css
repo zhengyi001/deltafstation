@@ -211,6 +211,24 @@ body {
     position: relative;
     min-height: 0;
 }
+/* 委托/成交/持仓 暂无数据时垂直居中 */
+.table-container .empty-state-cell {
+    padding: 0;
+    vertical-align: middle;
+}
+.table-container .empty-state-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 260px;
+    padding: 2rem;
+    color: #6c757d;
+}
+.table-container .empty-state-placeholder i {
+    margin-bottom: 0.75rem;
+    opacity: 0.3;
+}
 .table-header.sticky-top {
     background-color: #f8f9fa;
     z-index: 10;

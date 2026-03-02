@@ -60,6 +60,14 @@ def set_strategy(account_id):
         with open(cfg_path, 'r', encoding='utf-8') as f:
             cfg = json.load(f)
         stop_same_account(account_id)
+        order_amount = None
+        if 'order_amount' in data and data['order_amount'] is not None:
+            try:
+                v = float(data['order_amount'])
+                if v > 0:
+                    order_amount = v
+            except (TypeError, ValueError):
+                pass
         try:
             StrategyEngine.start(
                 account_id=account_id,
@@ -69,6 +77,7 @@ def set_strategy(account_id):
                 commission=float(cfg.get('commission', 0.001)),
                 signal_interval=(data.get('signal_interval') or '1d').lower(),
                 lookback_bars=int(data.get('lookback_bars') or 50),
+                order_amount=order_amount,
             )
         except Exception as e:
             return jsonify({'error': str(e)}), 500

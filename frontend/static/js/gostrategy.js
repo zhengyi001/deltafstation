@@ -697,16 +697,16 @@ const GoStrategyApp = {
                 return;
             }
 
-            const currentPrice = quote.price ?? (run ? GoStrategyApp.utils.getCurrentPriceForSymbol(run, symbol) : 0);
-            const baseVol = quote.volume ?? 5000;
-            const spread = 0.01;
-            const synthVol = () => Math.floor((baseVol && baseVol > 0 ? baseVol * 0.001 : 5000) * (0.8 + Math.random() * 0.4));
+            const hasBids = Array.isArray(quote.bids) && quote.bids.length > 0;
+            const hasAsks = Array.isArray(quote.asks) && quote.asks.length > 0;
             for (let i = 1; i <= 5; i++) {
-                const bidPrice = quote.bids?.[i - 1]?.[0] ?? (currentPrice - spread * i);
-                const bidVol = quote.bids?.[i - 1]?.[1] ?? synthVol();
+                const bid = hasBids ? quote.bids[i - 1] : null;
+                const ask = hasAsks ? quote.asks[i - 1] : null;
+                const bidPrice = bid?.[0] ?? null;
+                const bidVol = bid?.[1] ?? null;
+                const askPrice = ask?.[0] ?? null;
+                const askVol = ask?.[1] ?? null;
                 setRow('monitorQuoteBid', i, bidPrice, bidVol);
-                const askPrice = quote.asks?.[i - 1]?.[0] ?? (currentPrice + spread * i);
-                const askVol = quote.asks?.[i - 1]?.[1] ?? synthVol();
                 setRow('monitorQuoteAsk', i, askPrice, askVol);
             }
         },
@@ -761,12 +761,16 @@ const GoStrategyApp = {
             const account = GoStrategyApp.state.allSimulations.find(s => s.id === accountId);
             if (account?.status === 'running' && !confirm(`该账户 (${accountId}) 正在运行另一个策略，启动新策略将覆盖旧记录，确定继续吗？`)) return;
 
+            const singleAmountRaw = ($('runSingleAmount')?.value || '').replace(/,/g, '').trim();
+            const orderAmount = singleAmountRaw ? parseFloat(singleAmountRaw) : null;
+            const body = { strategy_id: strategyId, symbol, signal_interval: signalInterval, lookback_bars: 50 };
+            if (orderAmount != null && !isNaN(orderAmount) && orderAmount > 0) body.order_amount = orderAmount;
             addLog('正在向后端请求启动策略...', 'info');
             try {
                 const { ok, data: result } = await apiRequest(`/api/gostrategy/${accountId}/strategy`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ strategy_id: strategyId, symbol, signal_interval: signalInterval, lookback_bars: 50 })
+                    body: JSON.stringify(body)
                 });
                 if (ok) {
                     GoStrategyApp.state.peakEquity = 0;
@@ -1037,7 +1041,7 @@ const GoStrategyApp = {
                     const el = $(id);
                     if (el) { el.textContent = id.startsWith('metricTotal') && (id.includes('Days') || id.includes('Trades')) ? '0' : (id === 'metricSharpeRatio' || id === 'metricWinRate' ? '--' : '¥0.00'); if (id === 'metricTotalProfit' || id === 'metricDailyAvgPnL') el.style.color = '#333'; }
                 });
-                if ($('accountId')) $('accountId').textContent = 'df0002';
+                if ($('accountId')) $('accountId').textContent = '--';
                 if ($('commissionDisplay')) $('commissionDisplay').textContent = '--';
                 const startBtn = $('startStrategyBtn');
                 const stopBtn = $('stopStrategyBtn');
@@ -1069,7 +1073,7 @@ const GoStrategyApp = {
             if (pnlEl) { pnlEl.textContent = (totalPnL >= 0 ? '+' : '') + '¥' + totalPnL.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); pnlEl.className = 'account-value ' + (totalPnL > 0 ? 'text-danger' : totalPnL < 0 ? 'text-success' : ''); pnlEl.style.color = totalPnL > 0 ? '#dc3545' : (totalPnL < 0 ? '#28a745' : '#343a40'); }
             const returnEl = $('totalReturn');
             if (returnEl) { returnEl.textContent = (totalReturnNum >= 0 ? '+' : '') + totalReturn + '%'; returnEl.className = 'account-value ' + (totalReturnNum > 0 ? 'text-danger' : totalReturnNum < 0 ? 'text-success' : ''); returnEl.style.color = totalReturnNum > 0 ? '#dc3545' : (totalReturnNum < 0 ? '#28a745' : '#343a40'); }
-            if ($('accountId')) $('accountId').textContent = 'df0002';
+            if ($('accountId')) $('accountId').textContent = run.id || '--';
             if ($('commissionDisplay')) $('commissionDisplay').textContent = ((run.commission || 0.001) * 100).toFixed(2) + '%';
             const startBtn = $('startStrategyBtn');
             const stopBtn = $('stopStrategyBtn');
@@ -1091,7 +1095,7 @@ const GoStrategyApp = {
             const liveLabel = run?.last_signal_label;
             const liveSig = run?.last_signal;
             if (!hasHist && !liveLabel && !GoStrategyApp.state.liveSignalHistory?.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-5"><i class="fas fa-chart-line fa-2x mb-3 opacity-3"></i><div>暂无信号</div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted empty-state-cell"><div class="empty-state-placeholder"><i class="fas fa-chart-line fa-2x"></i><div>暂无信号</div></div></td></tr>';
                 return;
             }
             const formatDateTimeForCol = (d) => {
@@ -1139,29 +1143,28 @@ const GoStrategyApp = {
                     rows.push(`<tr><td>历史信号</td><td>${date}</td><td>${histSym || '--'}</td><td>${histSymName || '--'}</td><td><span class="signal-log-badge ${cls}"><i class="fas ${icon} me-1"></i>${label}</span></td><td>¥${triggerPrice}</td></tr>`);
                 }
             }
-            tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="text-center text-muted py-5"><i class="fas fa-chart-line fa-2x mb-3 opacity-3"></i><div>暂无信号</div></td></tr>';
+            tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="text-center text-muted empty-state-cell"><div class="empty-state-placeholder"><i class="fas fa-chart-line fa-2x"></i><div>暂无信号</div></div></td></tr>';
         },
 
         updateOrdersDisplay() {
             const tbody = $('ordersTableBody');
             if (!tbody) return;
             const run = GoStrategyApp.state.currentRun;
-            if (!run?.trades?.length) { tbody.innerHTML = renderEmptyState(10, 'fa-list-alt', '暂无委托'); return; }
-            const reversed = run.trades.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_ORDERS_DISPLAY);
-            GoStrategyApp.state.orders = reversed.map((t, i) => ({
-                id: `order_${10000000 + reversed.length - i - 1}`,
-                symbol: t.symbol || '--',
-                name: t.symbol || '--',
-                direction: t.action === 'buy' ? '买入' : '卖出',
-                price: t.price || 0,
-                quantity: t.quantity || 0,
-                traded_quantity: t.quantity || 0,
-                status: '全部成交',
-                timestamp: t.date || t.timestamp
-            }));
-            tbody.innerHTML = GoStrategyApp.state.orders.map(o => {
-                const cls = o.direction === '买入' ? 'buy' : 'sell';
-                return `<tr><td>${o.id.replace('order_', '')}</td><td>${o.symbol}</td><td>${o.name}</td><td><span class="direction-badge ${cls}">${o.direction}</span></td><td>¥${o.price.toFixed(2)}</td><td>${o.quantity}</td><td>${o.traded_quantity}</td><td><span class="order-status filled">${o.status}</span></td><td>${formatDateTime(o.timestamp)}</td><td>--</td></tr>`;
+            const currentStrategyId = run?.strategy_id || $('runStrategySelect')?.value || null;
+            let orders = run?.orders || [];
+            if (currentStrategyId) orders = orders.filter(o => (o.strategy_id || 'manual') === currentStrategyId);
+            if (!orders.length) { tbody.innerHTML = renderEmptyState(10, 'fa-list-alt', '暂无委托'); return; }
+            const statusMap = { 'pending': '已报', 'executed': '全部成交', 'cancelled': '已撤单' };
+            const statusClass = { 'pending': 'text-primary', 'executed': 'text-success', 'cancelled': 'text-muted' };
+            const reversed = orders.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_ORDERS_DISPLAY);
+            tbody.innerHTML = reversed.map(o => {
+                const isBuy = o.action === 'buy';
+                const cls = isBuy ? 'buy' : 'sell';
+                const filledQty = o.status === 'executed' ? (o.quantity || 0) : 0;
+                const statusText = statusMap[o.status] || o.status || '--';
+                const statusCls = statusClass[o.status] || '';
+                const oid = (o.id || '').replace(/^order_/, '');
+                return `<tr><td>${oid}</td><td>${o.symbol || '--'}</td><td>${o.symbol || '--'}</td><td><span class="direction-badge ${cls}">${isBuy ? '买入' : '卖出'}</span></td><td>¥${(o.price || 0).toFixed(2)}</td><td>${o.quantity || 0}</td><td>${filledQty}</td><td><span class="order-status ${statusCls}">${statusText}</span></td><td>${formatDateTime(o.time)}</td><td>--</td></tr>`;
             }).join('');
         },
 
@@ -1169,13 +1172,16 @@ const GoStrategyApp = {
             const tbody = $('tradesTableBody');
             if (!tbody) return;
             const run = GoStrategyApp.state.currentRun;
-            if (!run?.trades?.length) { tbody.innerHTML = renderEmptyState(9, 'fa-check-circle', '暂无成交'); return; }
-            const list = run.trades.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_TRADES_DISPLAY);
+            const currentStrategyId = run?.strategy_id || $('runStrategySelect')?.value || null;
+            let trades = run?.trades || [];
+            if (currentStrategyId) trades = trades.filter(t => (t.strategy_id || 'manual') === currentStrategyId);
+            if (!trades.length) { tbody.innerHTML = renderEmptyState(9, 'fa-check-circle', '暂无成交'); return; }
+            const list = trades.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_TRADES_DISPLAY);
             tbody.innerHTML = list.map((t, i) => {
                 const dir = t.action === 'buy' ? '买入' : '卖出';
                 const cls = t.action === 'buy' ? 'buy' : 'sell';
                 const amount = (t.price || 0) * (t.quantity || 0);
-                return `<tr><td>${10000000 + list.length - i - 1}</td><td>${(t.order_id || `order_${10000000 + list.length - i - 1}`).replace('order_', '')}</td><td>${t.symbol || '--'}</td><td>${t.symbol || '--'}</td><td><span class="direction-badge ${cls}">${dir}</span></td><td>¥${(t.price || 0).toFixed(2)}</td><td>${t.quantity || 0}</td><td>¥${amount.toFixed(2)}</td><td>${formatDateTime(t.date || t.timestamp)}</td></tr>`;
+                return `<tr><td>${10000001 + list.length - i - 1}</td><td>${(t.order_id || `order_${10000001 + list.length - i - 1}`).replace('order_', '')}</td><td>${t.symbol || '--'}</td><td>${t.symbol || '--'}</td><td><span class="direction-badge ${cls}">${dir}</span></td><td>¥${(t.price || 0).toFixed(2)}</td><td>${t.quantity || 0}</td><td>¥${amount.toFixed(2)}</td><td>${formatDateTime(t.date || t.timestamp)}</td></tr>`;
             }).join('');
         },
 
@@ -1256,7 +1262,7 @@ const GoStrategyApp = {
             const tbody = $('logTableBody');
             if (!tbody) return;
             const logs = GoStrategyApp.state.logs;
-            if (logs.length === 0) { tbody.innerHTML = '<tr><td colspan="2" class="text-center text-muted py-4"><i class="fas fa-list-alt fa-2x mb-2 opacity-3 d-block"></i>暂无日志</td></tr>'; return; }
+            if (logs.length === 0) { tbody.innerHTML = '<tr><td colspan="2" class="text-center text-muted empty-state-cell"><div class="empty-state-placeholder"><i class="fas fa-list-alt fa-2x"></i><div>暂无日志</div></div></td></tr>'; return; }
             const colorType = msg => GoStrategyApp.utils.getLogColorType(msg);
             tbody.innerHTML = logs.slice().reverse().map((log, i) => {
                 const ct = colorType(log.message);

@@ -175,7 +175,7 @@
                             <div class="trade-form-row">
                                 <label class="form-label">单次投入</label>
                                 <div class="trade-form-content">
-                                    <input type="text" class="form-control form-control-sm" id="runSingleAmount" value="100,000" placeholder="100,000" inputmode="numeric">
+                                    <input type="text" class="form-control form-control-sm" id="runSingleAmount" value="" placeholder="不填则用账户全部资金" inputmode="numeric">
                                 </div>
                             </div>
                             <input type="hidden" id="runInitialCapital" value="100000">
@@ -304,9 +304,11 @@
                                 </thead>
                                 <tbody id="ordersTableBody">
                                     <tr>
-                                        <td colspan="10" class="text-center text-muted py-5">
-                                            <i class="fas fa-list-alt fa-2x mb-3 opacity-3"></i>
-                                            <div>暂无委托记录</div>
+                                        <td colspan="10" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-list-alt fa-2x"></i>
+                                                <div>暂无委托记录</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -320,9 +322,11 @@
                                 </thead>
                                 <tbody id="tradesTableBody">
                                     <tr>
-                                        <td colspan="9" class="text-center text-muted py-5">
-                                            <i class="fas fa-check-circle fa-2x mb-3 opacity-3"></i>
-                                            <div>暂无成交记录</div>
+                                        <td colspan="9" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-check-circle fa-2x"></i>
+                                                <div>暂无成交记录</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -336,9 +340,11 @@
                                 </thead>
                                 <tbody id="positionTableBody">
                                     <tr>
-                                        <td colspan="9" class="text-center text-muted py-5">
-                                            <i class="fas fa-inbox fa-2x mb-3 opacity-3"></i>
-                                            <div>当前账户空仓</div>
+                                        <td colspan="9" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-inbox fa-2x"></i>
+                                                <div>当前账户空仓</div>
+                                            </div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -351,7 +357,14 @@
                                     <tr><th>类型</th><th>日期</th><th>投资标的</th><th>标的名称</th><th>信号</th><th>触发价格</th></tr>
                                 </thead>
                                 <tbody id="signalsTableBody">
-                                    <tr><td colspan="6" class="text-center text-muted py-5"><i class="fas fa-chart-line fa-2x mb-3 opacity-3"></i><div>暂无信号</div></td></tr>
+                                    <tr>
+                                        <td colspan="6" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-chart-line fa-2x"></i>
+                                                <div>暂无信号</div>
+                                            </div>
+                                        </td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -362,7 +375,14 @@
                                     <tr><th style="width: 90px;">时间</th><th>消息</th></tr>
                                 </thead>
                                 <tbody id="logTableBody">
-                                    <tr><td colspan="2" class="text-center text-muted py-4"><i class="fas fa-list-alt fa-2x mb-2 opacity-3 d-block"></i>暂无日志</td></tr>
+                                    <tr>
+                                        <td colspan="2" class="text-center text-muted empty-state-cell">
+                                            <div class="empty-state-placeholder">
+                                                <i class="fas fa-list-alt fa-2x"></i>
+                                                <div>暂无日志</div>
+                                            </div>
+                                        </td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>

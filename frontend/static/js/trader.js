@@ -1290,7 +1290,8 @@ const TraderApp = {
             const sim = TraderApp.state.simulation;
             if (!sim?.positions || Object.keys(sim.positions).length === 0) {
                 body.innerHTML = renderEmptyState(9, 'fa-inbox', '暂无持仓');
-                this.updateSellSelect(); return;
+                this.updateSellSelect();
+                return;
             }
             const rows = Object.entries(sim.positions).map(([sym, pos]) => {
                 const qty = Math.abs(pos.quantity); if (qty === 0) return '';
@@ -1322,7 +1323,7 @@ const TraderApp = {
         updateTrades() {
             const body = $('tradesTableBody'); if (!body) return;
             const ts = TraderApp.state.simulation?.trades || [];
-            if (ts.length === 0) { body.innerHTML = renderEmptyState(9, 'fa-check-circle', '暂无成交'); return; }
+            if (ts.length === 0) { body.innerHTML = renderEmptyState(10, 'fa-check-circle', '暂无成交'); return; }
             
             const sortedTrades = ts.slice().reverse().slice(0, TraderApp.CONSTANTS.MAX_TRADES_DISPLAY);
             
@@ -1332,6 +1333,7 @@ const TraderApp = {
                 const timeStr = new Date(iso).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
                 const directionText = t.action === 'buy' ? '买入' : '卖出';
                 const tradeId = 'sim_' + (ts.length - i).toString().padStart(6, '0');
+                const strategyLabel = t.strategy_id || 'manual';
                 
                 return `<tr>
                     <td>${tradeId}</td>
@@ -1343,6 +1345,7 @@ const TraderApp = {
                     <td>${t.quantity}</td>
                     <td>¥${amt.toFixed(2)}</td>
                     <td>${timeStr}</td>
+                    <td>${strategyLabel}</td>
                 </tr>`;
             }).join('');
         },
@@ -1351,7 +1354,7 @@ const TraderApp = {
         updateOrders() {
             const body = $('ordersTableBody'); if (!body) return;
             const orders = TraderApp.state.simulation?.orders || [];
-            if (orders.length === 0) { body.innerHTML = renderEmptyState(10, 'fa-list-alt', '暂无委托'); return; }
+            if (orders.length === 0) { body.innerHTML = renderEmptyState(11, 'fa-list-alt', '暂无委托'); return; }
             
             const sortedOrders = orders.slice().reverse().slice(0, TraderApp.CONSTANTS.MAX_ORDERS_DISPLAY);
             
@@ -1361,6 +1364,7 @@ const TraderApp = {
                 const statusClass = { 'pending': 'text-primary', 'executed': 'text-success', 'cancelled': 'text-muted' };
                 const filledQty = o.status === 'executed' ? o.quantity : 0; 
                 const timeStr = new Date(o.time).toLocaleTimeString('zh-CN', { hour12: false });
+                const strategyLabel = o.strategy_id || 'manual';
 
                 let actionBtn = '';
                 if (o.status === 'pending') {
@@ -1377,6 +1381,7 @@ const TraderApp = {
                     <td>${filledQty}</td>
                     <td><span class="${statusClass[o.status] || ''}">${statusMap[o.status] || o.status}</span></td>
                     <td>${timeStr}</td>
+                    <td>${strategyLabel}</td>
                     <td>${actionBtn}</td>
                 </tr>`;
             }).join('');
