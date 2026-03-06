@@ -1,11 +1,11 @@
-"""仿真账户配置与状态服务（共享逻辑）。"""
+"""仿真账户配置：路径与停机时落盘（StrategyEngine / SimulationEngine 共用）。"""
 import os
 import json
 from datetime import datetime
 
 from backend.core.strategy_engine import StrategyEngine
 from backend.core.simulation_engine import SimulationEngine
-from backend.core.utils.engine_state import inject_strategy_id
+from backend.core.utils.engine_snapshot import inject_strategy_id
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 

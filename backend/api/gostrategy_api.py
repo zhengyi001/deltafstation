@@ -1,38 +1,32 @@
 """
-GoStrategy API - 策略运行
+GoStrategy API - 专注策略运行：
 
-路由方法说明：
-  set_strategy  PUT  /api/gostrategy/<account_id>/strategy  设置账户的策略（启动/替换）。
-  chart         GET  /api/gostrategy/<account_id>/chart     获取该账户当前策略的 K 线与信号。
+- 路由
+  - PUT  /api/gostrategy/<account_id>/strategy  启动或替换账户策略。
+  - GET  /api/gostrategy/<account_id>/chart     获取当前策略的 K 线与信号。
 
-account_id 为通用交易账户标识，可来自 simulation（SIM_xxx）或 broker（未来 BROKER_xxx）。
-本 API 按 account_id 解析操作对象（simulation 或 broker），对上层透明。
+- 账户与配置
+  - account_id：账户标识（当前为 SIM_xxx，后续可扩展 BROKER_xxx）。
+  - _resolve_account_config_path(account_id)：解析到账户配置文件（data/simulations/<id>.json）。
+  - 本 API 只负责「选策略 + 启动」和「chart」，账户创建等由 simulation_api 处理。
 
-分层与职责：
+- set_strategy
+  - 校验账户存在，body 含 strategy_id / symbol。
+  - stop_same_account(account_id)：停掉同账户上的 StrategyEngine / SimulationEngine，并把最新 engine_state 落盘。
+  - 读取配置中的 engine_state 作为恢复快照，调用 StrategyEngine.start(..., state=engine_state) 启动策略。
+  - 更新配置中的 status/strategy_id/symbol/signal_interval 并落盘，再合并最新 state 返回给前端。
 
-                    account_id (SIM_xxx | BROKER_xxx)
-                              │
-                              ▼
-                    ┌─────────────────────┐
-                    │   gostrategy_api    │  ← 策略运行（启动 / chart）
-                    │  account_id 通用    │
-                    └─────────┬───────────┘
-                              │ 解析 account_id
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-    ┌──────────────────┐           ┌──────────────────┐
-    │ simulation_api   │           │   broker_api     │
-    │ simulation_id    │           │   broker_id      │
-    │ data/simulations │           │   (未来实现)      │
-    └──────────────────┘           └──────────────────┘
+- chart
+  - 要求账户上有正在运行的策略（StrategyEngine.get_run_info 非空）。
+  - 直接返回 StrategyEngine.get_chart_data(account_id) 的 K 线与信号；未运行或异常时返回 400/500。
 """
 from flask import Blueprint, request, jsonify
 import os
 import json
 
 from backend.core.strategy_engine import StrategyEngine
-from backend.core.utils.simulation_state import config_path, stop_same_account
-from backend.core.utils.engine_state import inject_strategy_id
+from backend.core.utils.sim_persistence import config_path, stop_same_account
+from backend.core.utils.engine_snapshot import inject_strategy_id
 
 gostrategy_bp = Blueprint('gostrategy', __name__)
 
@@ -72,6 +66,8 @@ def set_strategy(account_id):
                     order_amount = v
             except (TypeError, ValueError):
                 pass
+        signal_interval = (data.get('signal_interval') or '1d').lower()
+        lookback_bars = int(data.get('lookback_bars') or 50)
         try:
             StrategyEngine.start(
                 account_id=account_id,
@@ -79,8 +75,8 @@ def set_strategy(account_id):
                 symbol=symbol,
                 initial_capital=float(cfg.get('initial_capital', 100000)),
                 commission=float(cfg.get('commission', 0.001)),
-                signal_interval=(data.get('signal_interval') or '1d').lower(),
-                lookback_bars=int(data.get('lookback_bars') or 50),
+                signal_interval=signal_interval,
+                lookback_bars=lookback_bars,
                 interval=10.0,
                 order_amount=order_amount,
                 state=engine_state,
@@ -90,7 +86,7 @@ def set_strategy(account_id):
         cfg['status'] = 'running'
         cfg['strategy_id'] = strategy_id
         cfg['symbol'] = symbol
-        cfg['signal_interval'] = (data.get('signal_interval') or '1d').lower()
+        cfg['signal_interval'] = signal_interval
         with open(cfg_path, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         state = StrategyEngine.get_state(account_id)

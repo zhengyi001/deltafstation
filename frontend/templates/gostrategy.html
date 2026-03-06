@@ -11,6 +11,16 @@
     <link href="{{ url_for('static', filename='css/gostrategy.css') }}" rel="stylesheet">
 </head>
 <body>
+    {% macro empty_state_row(colspan, icon, text) %}
+    <tr>
+        <td colspan="{{ colspan }}" class="text-center text-muted empty-state-cell">
+            <div class="empty-state-placeholder">
+                <i class="fas {{ icon }} fa-2x"></i>
+                <div>{{ text }}</div>
+            </div>
+        </td>
+    </tr>
+    {% endmacro %}
     {% set active_page = 'run' %}
     {% include '_banner.html' %}
 
@@ -42,7 +52,7 @@
                 <div class="col account-item">
                     <div class="account-label text-muted">运行状态</div>
                     <div class="account-value">
-                        <span class="status-badge waiting" id="runStatusBadge" style="font-size: 11px; padding: 2px 8px; vertical-align: middle;">未运行</span>
+                        <span class="status-badge status-badge-compact waiting" id="runStatusBadge">未运行</span>
                     </div>
                 </div>
             </div>
@@ -51,54 +61,25 @@
             <div class="row g-0">
                 <div class="col-md-12">
                     <div class="d-flex justify-content-between align-items-center pt-2 metrics-row flex-wrap">
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">累计收益:</span>
-                            <span id="metricCumulativeReturn" class="fw-bold ms-1" style="font-size: 13px;">0.00%</span>
+                        {% for m in [
+                            {'label': '累计收益:', 'id': 'metricCumulativeReturn', 'default': '0.00%', 'cls': ''},
+                            {'label': '最大回撤:', 'id': 'metricMaxDrawdown', 'default': '0.00%', 'cls': 'text-danger'},
+                            {'label': '夏普比率:', 'id': 'metricSharpeRatio', 'default': '--', 'cls': ''},
+                            {'label': '胜率:', 'id': 'metricWinRate', 'default': '--', 'cls': ''},
+                            {'label': '总盈亏额:', 'id': 'metricTotalProfit', 'default': '¥0.00', 'cls': '', 'border': true},
+                            {'label': '总成交额:', 'id': 'metricTotalTurnover', 'default': '¥0.00', 'cls': ''},
+                            {'label': '平均盈利:', 'id': 'metricAvgProfit', 'default': '¥0.00', 'cls': 'text-danger'},
+                            {'label': '平均亏损:', 'id': 'metricAvgLoss', 'default': '¥0.00', 'cls': 'text-success'},
+                            {'label': '日均盈亏:', 'id': 'metricDailyAvgPnL', 'default': '¥0.00', 'cls': ''},
+                            {'label': '总交易日:', 'id': 'metricTotalDays', 'default': '0', 'cls': '', 'border': true},
+                            {'label': '总成交数:', 'id': 'metricTotalTrades', 'default': '0', 'cls': ''},
+                            {'label': '手续费:', 'id': 'metricTotalCommission', 'default': '¥0.00', 'cls': ''}
+                        ] %}
+                        <div class="metric-item {{ 'border-start ps-3' if m.border else '' }}">
+                            <span class="text-muted metric-label">{{ m.label }}</span>
+                            <span id="{{ m.id }}" class="fw-bold ms-1 metric-value {{ m.cls }}">{{ m.default }}</span>
                         </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">最大回撤:</span>
-                            <span id="metricMaxDrawdown" class="fw-bold text-danger ms-1" style="font-size: 13px;">0.00%</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">夏普比率:</span>
-                            <span id="metricSharpeRatio" class="fw-bold ms-1" style="font-size: 13px;">--</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">胜率:</span>
-                            <span id="metricWinRate" class="fw-bold ms-1" style="font-size: 13px;">--</span>
-                        </div>
-                        <div class="metric-item border-start ps-3">
-                            <span class="text-muted" style="font-size: 11px;">总盈亏额:</span>
-                            <span id="metricTotalProfit" class="fw-bold ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">总成交额:</span>
-                            <span id="metricTotalTurnover" class="fw-bold ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">平均盈利:</span>
-                            <span id="metricAvgProfit" class="fw-bold text-danger ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">平均亏损:</span>
-                            <span id="metricAvgLoss" class="fw-bold text-success ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">日均盈亏:</span>
-                            <span id="metricDailyAvgPnL" class="fw-bold ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
-                        <div class="metric-item border-start ps-3">
-                            <span class="text-muted" style="font-size: 11px;">总交易日:</span>
-                            <span id="metricTotalDays" class="fw-bold ms-1" style="font-size: 13px;">0</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">总成交数:</span>
-                            <span id="metricTotalTrades" class="fw-bold ms-1" style="font-size: 13px;">0</span>
-                        </div>
-                        <div class="metric-item">
-                            <span class="text-muted" style="font-size: 11px;">手续费:</span>
-                            <span id="metricTotalCommission" class="fw-bold ms-1" style="font-size: 13px;">¥0.00</span>
-                        </div>
+                        {% endfor %}
                     </div>
                 </div>
             </div>
@@ -132,14 +113,14 @@
                                             <option value="">请选择交易账户</option>
                                         </select>
                                     </div>
-                                    <div id="accountConfigPreview" class="mt-2 p-2 bg-light border rounded" style="display: none; border-style: dashed !important;">
+                                    <div id="accountConfigPreview" class="mt-2 p-2 bg-light border rounded dashed account-config-preview" style="display: none;">
                                         <div class="d-flex justify-content-between mb-1">
-                                            <span class="text-muted" style="font-size: 13px;">余额:</span>
-                                            <span id="previewBalance" class="fw-bold" style="font-size: 14px; color: #333;">¥0.00</span>
+                                            <span class="text-muted preview-label">余额:</span>
+                                            <span id="previewBalance" class="fw-bold preview-value">¥0.00</span>
                                         </div>
                                         <div class="d-flex justify-content-between">
-                                            <span class="text-muted" style="font-size: 13px;">费率:</span>
-                                            <span id="previewCommission" class="fw-bold" style="font-size: 14px; color: #333;">0.0001</span>
+                                            <span class="text-muted preview-label">费率:</span>
+                                            <span id="previewCommission" class="fw-bold preview-value">0.0001</span>
                                         </div>
                                     </div>
                                 </div>
@@ -172,7 +153,7 @@
                             <div class="trade-form-row">
                                 <label class="form-label">标的名称</label>
                                 <div class="trade-form-content">
-                                    <input type="text" class="form-control form-control-sm" id="runSymbolName" value="Bitcoin" readonly style="background-color: #f8f9fa; color: #666; border-style: dashed !important;">
+                                    <input type="text" class="form-control form-control-sm input-readonly-preview" id="runSymbolName" value="Bitcoin" readonly>
                                 </div>
                             </div>
                             <div class="trade-form-row">
@@ -184,8 +165,8 @@
                             <input type="hidden" id="runInitialCapital" value="100000">
                             <input type="hidden" id="runCommission" value="0.001">
                             <div class="d-flex gap-2 mt-3 mb-1">
-                                <button type="button" class="btn btn-success flex-grow-1 d-flex align-items-center justify-content-center" onclick="startRunStrategy()" id="startStrategyBtn" style="height: 31px; font-size: 13px; border-radius: 6px; font-weight: 500; border: none; box-shadow: 0 2px 4px rgba(40, 167, 69, 0.15);"><i class="fas fa-play fs-12 me-2"></i>启动策略</button>
-                                <button type="button" class="btn btn-danger flex-grow-1 d-flex align-items-center justify-content-center" onclick="stopRunStrategy()" id="stopStrategyBtn" disabled style="height: 31px; font-size: 13px; border-radius: 6px; font-weight: 500; border: none;"><i class="fas fa-stop fs-12 me-2"></i>停止策略</button>
+                                <button type="button" class="btn btn-success btn-run-strategy flex-grow-1 d-flex align-items-center justify-content-center" onclick="startRunStrategy()" id="startStrategyBtn"><i class="fas fa-play fs-12 me-2"></i>启动策略</button>
+                                <button type="button" class="btn btn-danger btn-run-strategy flex-grow-1 d-flex align-items-center justify-content-center" onclick="stopRunStrategy()" id="stopStrategyBtn" disabled><i class="fas fa-stop fs-12 me-2"></i>停止策略</button>
                             </div>
                         </form>
                     </div>
@@ -198,10 +179,10 @@
                             <i class="fas fa-folder-open"></i>
                             <span>策略管理</span>
                         </div>
-                        <div class="btn-group" style="box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
+                        <div class="btn-group header-btn-group-shadow">
                             <button class="btn btn-xs strategy-upload-btn px-2" onclick="document.getElementById('strategyFileUpload').click()" title="上传策略 (.py)"><i class="fas fa-upload"></i></button>
-                            <input type="file" id="strategyFileUpload" style="display: none;" accept=".py" onchange="uploadStrategyFile(this)">
-                            <button class="btn btn-xs btn-outline-secondary px-2" onclick="loadStrategies()" title="刷新列表" style="border-width: 1px; border-radius: 0 4px 4px 0; border-left: none; font-size: 11px; color: #6c757d; border-color: #dee2e6;"><i class="fas fa-sync-alt"></i></button>
+                            <input type="file" id="strategyFileUpload" class="d-none" accept=".py" onchange="uploadStrategyFile(this)">
+                            <button class="btn btn-xs btn-outline-secondary px-2 btn-refresh-list" onclick="loadStrategies()" title="刷新列表"><i class="fas fa-sync-alt"></i></button>
                         </div>
                     </div>
                     <div class="card-body">
@@ -236,14 +217,14 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <div class="d-flex gap-3" style="flex: 1; min-height: 0;">
+                        <div class="d-flex gap-3 chart-flex-fill">
                             <!-- 图表区 -->
                             <div class="chart-container-box">
                                 <div id="dailyChartContainer" class="chart-container-relative">
                                     <canvas id="monitorDailyChart"></canvas>
                                     <div id="monitorChartPlaceholder" class="chart-placeholder-overlay">
                                         <i class="fas fa-chart-line fa-2x text-muted mb-2 opacity-5"></i>
-                                        <div class="text-muted" style="font-size: 14px;">暂无 K 线数据</div>
+                                        <div class="text-muted chart-placeholder-text">暂无 K 线数据</div>
                                     </div>
                                     <div id="monitorDailyChartTooltip" class="daily-chart-tooltip" style="display: none;"></div>
                                 </div>
@@ -251,29 +232,23 @@
                                     <canvas id="equityChart"></canvas>
                                 </div>
                             </div>
-                            
-                            <div style="width: 1px; background-color: #e9ecef;"></div>
-                            
+                            <div class="quote-divider"></div>
                             <!-- 盘口区 -->
                             <div class="quote-list">
                                 <div class="text-end mb-2 px-1">
-                                    <div class="fw-bold" style="font-size: 22px; color: #1a1a1a; line-height: 1.1;"><span style="font-size: 16px;">¥</span><span id="monitorPrevClose">--</span></div>
-                                    <div style="font-size: 13px; margin-top: 2px;"><span class="text-muted" style="font-size: 12px;" id="monitorPrevLabel">较上根</span><span id="monitorPrevReturn" class="fw-bold ms-1">--</span></div>
+                                    <div class="fw-bold monitor-prev-price"><span class="monitor-prev-unit">¥</span><span id="monitorPrevClose">--</span></div>
+                                    <div class="monitor-prev-row"><span class="text-muted monitor-prev-label" id="monitorPrevLabel">较上根</span><span id="monitorPrevReturn" class="fw-bold ms-1">--</span></div>
                                 </div>
                                 <div class="d-flex flex-column gap-1">
-                                    <div id="monitorQuoteAsk5" class="quote-row quote-ask-row"><span class="label">卖5</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteAsk4" class="quote-row quote-ask-row"><span class="label">卖4</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteAsk3" class="quote-row quote-ask-row"><span class="label">卖3</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteAsk2" class="quote-row quote-ask-row"><span class="label">卖2</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteAsk1" class="quote-row quote-ask-row fw-bold"><span class="label">卖1</span><span class="price">--</span><span class="vol">--</span></div>
+                                    {% for i in [5, 4, 3, 2, 1] %}
+                                    <div id="monitorQuoteAsk{{ i }}" class="quote-row quote-ask-row {{ 'fw-bold' if i == 1 else '' }}"><span class="label">卖{{ i }}</span><span class="price">--</span><span class="vol">--</span></div>
+                                    {% endfor %}
                                 </div>
                                 <hr class="my-1">
                                 <div class="d-flex flex-column gap-1">
-                                    <div id="monitorQuoteBid1" class="quote-row quote-bid-row fw-bold"><span class="label">买1</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteBid2" class="quote-row quote-bid-row"><span class="label">买2</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteBid3" class="quote-row quote-bid-row"><span class="label">买3</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteBid4" class="quote-row quote-bid-row"><span class="label">买4</span><span class="price">--</span><span class="vol">--</span></div>
-                                    <div id="monitorQuoteBid5" class="quote-row quote-bid-row"><span class="label">买5</span><span class="price">--</span><span class="vol">--</span></div>
+                                    {% for i in [1, 2, 3, 4, 5] %}
+                                    <div id="monitorQuoteBid{{ i }}" class="quote-row quote-bid-row {{ 'fw-bold' if i == 1 else '' }}"><span class="label">买{{ i }}</span><span class="price">--</span><span class="vol">--</span></div>
+                                    {% endfor %}
                                 </div>
                                 <div id="monitorSignalBtn" class="monitor-signal-btn">
                                     <i class="fas monitor-signal-icon"></i>
@@ -303,17 +278,10 @@
                         <div class="table-container data-view data-view-orders">
                             <table class="table table-hover data-table mb-0">
                                 <thead class="table-header sticky-top">
-                                    <tr><th>委托号</th><th>投资标的</th><th>标的名称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>时间</th><th>操作</th></tr>
+                                    <tr><th>委托号</th><th>投资标的</th><th>标的名称</th><th>方向</th><th>价格</th><th>数量</th><th>已成交</th><th>状态</th><th>策略</th><th>时间</th></tr>
                                 </thead>
                                 <tbody id="ordersTableBody">
-                                    <tr>
-                                        <td colspan="10" class="text-center text-muted empty-state-cell">
-                                            <div class="empty-state-placeholder">
-                                                <i class="fas fa-list-alt fa-2x"></i>
-                                                <div>暂无委托记录</div>
-                                            </div>
-                                        </td>
-                                    </tr>
+                                    {{ empty_state_row(10, 'fa-list-alt', '暂无委托记录') }}
                                 </tbody>
                             </table>
                         </div>
@@ -321,11 +289,11 @@
                         <div class="table-container data-view data-view-trades d-none">
                             <table class="table table-hover data-table mb-0">
                                 <thead class="table-header sticky-top">
-                                    <tr><th>成交号</th><th>委托号</th><th>投资标的</th><th>标的名称</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>时间</th></tr>
+                                    <tr><th>成交号</th><th>委托号</th><th>投资标的</th><th>标的名称</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>策略</th><th>时间</th></tr>
                                 </thead>
                                 <tbody id="tradesTableBody">
                                     <tr>
-                                        <td colspan="9" class="text-center text-muted empty-state-cell">
+                                        <td colspan="10" class="text-center text-muted empty-state-cell">
                                             <div class="empty-state-placeholder">
                                                 <i class="fas fa-check-circle fa-2x"></i>
                                                 <div>暂无成交记录</div>
@@ -342,14 +310,7 @@
                                     <tr><th>投资标的</th><th>标的名称</th><th>持仓</th><th>成本价</th><th>现价</th><th>盈亏</th><th>盈亏率</th><th>市值</th><th>操作</th></tr>
                                 </thead>
                                 <tbody id="positionTableBody">
-                                    <tr>
-                                        <td colspan="9" class="text-center text-muted empty-state-cell">
-                                            <div class="empty-state-placeholder">
-                                                <i class="fas fa-inbox fa-2x"></i>
-                                                <div>当前账户空仓</div>
-                                            </div>
-                                        </td>
-                                    </tr>
+                                    {{ empty_state_row(9, 'fa-inbox', '当前账户空仓') }}
                                 </tbody>
                             </table>
                         </div>
@@ -378,14 +339,7 @@
                                     <tr><th style="width: 90px;">时间</th><th>消息</th></tr>
                                 </thead>
                                 <tbody id="logTableBody">
-                                    <tr>
-                                        <td colspan="2" class="text-center text-muted empty-state-cell">
-                                            <div class="empty-state-placeholder">
-                                                <i class="fas fa-list-alt fa-2x"></i>
-                                                <div>暂无日志</div>
-                                            </div>
-                                        </td>
-                                    </tr>
+                                    {{ empty_state_row(2, 'fa-list-alt', '暂无日志') }}
                                 </tbody>
                             </table>
                         </div>
@@ -406,7 +360,7 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body p-0">
-                    <pre id="strategyCodeContent" style="margin: 0; padding: 1rem; max-height: 600px; overflow-y: auto; background-color: #f8f9fa; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px;"></pre>
+                    <pre id="strategyCodeContent" class="strategy-code-pre"></pre>
                 </div>
                 <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button></div>
             </div>

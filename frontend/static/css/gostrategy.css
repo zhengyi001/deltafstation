@@ -556,3 +556,28 @@ body {
 
 .flex-row-nowrap { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: center; gap: 1rem; }
 .opacity-3 { opacity: 0.3 !important; }
+
+/* ========== 10. 启动策略页内联样式抽离 ========== */
+.text-11 { font-size: 11px; }
+.text-12 { font-size: 12px; }
+.text-13 { font-size: 13px; }
+.text-14 { font-size: 14px; }
+.metric-label { font-size: 11px; }
+.metric-value { font-size: 13px; }
+.status-badge-compact { padding: 2px 8px; vertical-align: middle; }
+.account-config-preview.dashed { border-style: dashed !important; }
+.preview-label { font-size: 13px; }
+.preview-value { font-size: 14px; color: #333; }
+.input-readonly-preview { background-color: #f8f9fa !important; color: #666 !important; border-style: dashed !important; }
+.btn-run-strategy { height: 31px; font-size: 13px; border-radius: 6px; font-weight: 500; border: none; }
+.btn-run-strategy.btn-success { box-shadow: 0 2px 4px rgba(40, 167, 69, 0.15); }
+.header-btn-group-shadow { box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+.btn-refresh-list { border-width: 1px; border-radius: 0 4px 4px 0; border-left: none; font-size: 11px; color: #6c757d; border-color: #dee2e6; }
+.chart-flex-fill { flex: 1; min-height: 0; }
+.quote-divider { width: 1px; background-color: #e9ecef; }
+.monitor-prev-price { font-size: 22px; color: #1a1a1a; line-height: 1.1; }
+.monitor-prev-unit { font-size: 16px; }
+.monitor-prev-row { font-size: 13px; margin-top: 2px; }
+.monitor-prev-label { font-size: 12px; }
+.strategy-code-pre { margin: 0; padding: 1rem; max-height: 600px; overflow-y: auto; background-color: #f8f9fa; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+.chart-placeholder-text { font-size: 14px; }

@@ -26,7 +26,7 @@ from deltafq.live.event_engine import EVENT_TICK
 from deltafq.live.gateway_registry import create_data_gateway, create_trade_gateway
 from deltafq.live.models import OrderRequest
 
-from backend.core.utils.engine_state import build_state_from_engine, restore_engine_from_state
+from backend.core.utils.engine_snapshot import build_state_from_engine, restore_engine_from_state
 
 
 def _pending_order_request(o: dict) -> Optional[OrderRequest]:

@@ -22,9 +22,6 @@ const GoStrategyApp = {
     CONSTANTS: {
         REFRESH_RATE_STRATEGY: 10000,
         EQUITY_MAX_POINTS: 100,
-        DEFAULT_BASE_PRICE: 5.85,
-        MAX_ORDERS_DISPLAY: 20,
-        MAX_TRADES_DISPLAY: 50,
         LOG_MAX_ENTRIES: 200
     },
 
@@ -37,54 +34,60 @@ const GoStrategyApp = {
         orders: [],
         trades: [],
         logs: [],
-        maxDrawdown: 0,
         peakEquity: 0,
         monitorDailyChartCanvas: null,
         monitorDailyChartCtx: null,
         monitorDailyData: { dates: [], candles: [], signals: [] },
         liveSignalHistory: [],
         lastLiveSignalRunId: null,
-        monitorCurrentChartType: 'daily',
-        monitorCurrentIndicator: 'ma',
         monitorMarketData: {},
         timers: { refresh: null, clock: null }
     },
 
+    /** 从 DOM 读取当前监控图类型（daily/equity）与副图指标（ma/boll），周期来自表单 runSignalInterval。 */
+    _monitorChartType() {
+        const el = $('chartTypeDaily');
+        return el?.classList.contains('active') ? 'daily' : 'equity';
+    },
+    _monitorIndicator() {
+        const btn = $('monitorIndicatorButtons')?.querySelector('.chart-type-btn.active');
+        return btn?.dataset?.indicator || 'ma';
+    },
+
     /** 工具：从 simulation 推算持仓市值与标的当前价（供监控/总览/持仓表格共用）。 */
     utils: {
-        /** 根据持仓与最新成交价推算标的当前价，合理范围内优先用 trade 价格。 */
+        /** 有实时行情或成交价则返回当前价，否则返回 null（界面显示占位符，不模拟数据）。 */
         getCurrentPriceForSymbol(simulation, symbol) {
-            const def = GoStrategyApp.CONSTANTS.DEFAULT_BASE_PRICE;
-            if (!simulation) return def;
-            const pos = simulation.positions?.[symbol];
-            let price = pos?.avg_price ?? 0;
+            if (!simulation || !symbol) return null;
+            const quote = GoStrategyApp.state.monitorMarketData[symbol];
+            if (quote?.price != null && quote.status !== 'loading' && Number(quote.price) > 0)
+                return Number(quote.price);
             if (simulation.trades?.length) {
                 const last = simulation.trades.filter(t => t.symbol === symbol).pop();
-                if (last?.price && last.price > 0 && last.price < 100) price = last.price;
+                if (last?.price && last.price > 0) return last.price;
             }
-            if (!price && pos?.current_price && pos.current_price > 0 && pos.current_price < 100)
-                price = pos.current_price;
-            return price > 0 ? price : def;
+            return null;
         },
 
-        /** 计算 simulation 的持仓市值（用 utils 的当前价）。 */
+        /** 计算 simulation 的持仓市值（仅用有当前价的持仓，无行情则该项不计入）。 */
         getPositionValue(simulation) {
             if (!simulation?.positions) return 0;
             let total = 0;
             Object.entries(simulation.positions).forEach(([sym, pos]) => {
                 const qty = Math.abs(pos.quantity || 0);
                 const price = GoStrategyApp.utils.getCurrentPriceForSymbol(simulation, sym);
-                total += qty * price;
+                if (price != null && price > 0) total += qty * price;
             });
             return total;
         },
 
-        /** 日志颜色类型（与交易页一致）。 */
+        /** 根据日志内容返回颜色类型：买入→buy，卖出→sell，否则→info。 */
         getLogColorType(message) {
             if (message.includes('买入')) return 'buy';
             if (message.includes('卖出')) return 'sell';
             return 'info';
         },
+        /** 将原始日志消息格式化为带徽章/图标的 HTML 片段。 */
         formatLogMessage(msg, type) {
             if (msg.includes('策略执行买入:')) {
                 const m = msg.replace(/^策略执行买入:\s*/, '');
@@ -96,11 +99,110 @@ const GoStrategyApp = {
             }
             const icon = type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-times-circle' : type === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle';
             return `<i class="fas ${icon} log-msg-icon log-${type} me-1"></i>${msg}`;
+        },
+
+        /** 前端全量指标计算：基于全量成交历史 (trades) 和当前实时资产。 */
+        calculateAccountMetrics(run) {
+            if (!run) return {};
+            const initial = run.initial_capital || 100000;
+            const currentCash = run.current_capital ?? initial;
+            const trades = run.trades || [];
+            
+            // 1. 计算实时市值与总资产
+            let posVal = 0;
+            Object.entries(run.positions || {}).forEach(([sym, pos]) => {
+                const qty = Math.abs(pos.quantity || 0);
+                if (qty <= 0) return;
+                // 从全局行情缓存获取价格
+                const q = GoStrategyApp.state.monitorMarketData[sym];
+                const price = q ? q.price : (pos.avg_price || 0);
+                posVal += qty * price;
+            });
+            const totalAssets = currentCash + posVal;
+            const totalPnL = totalAssets - initial;
+            const totalReturn = (totalPnL / initial);
+
+            // 2. 遍历成交：统计笔数、佣金、成交额
+            let totalCommission = 0;
+            let totalTurnover = 0;
+            trades.forEach(t => {
+                totalCommission += (t.commission || 0);
+                totalTurnover += Math.abs(t.quantity || 0) * (t.price || 0);
+            });
+
+            // 3. FIFO 胜率与盈亏分布
+            const closedPnLs = [];
+            const inventory = {}; // {symbol: {buys: [], sells: []}}
+            
+            // 简单 FIFO 配对逻辑
+            trades.forEach(t => {
+                const sym = t.symbol;
+                const qty = Math.abs(t.quantity || 0);
+                const price = t.price || 0;
+                if (!inventory[sym]) inventory[sym] = { buys: [], sells: [] };
+                
+                if (t.action === 'buy') {
+                    let remaining = qty;
+                    while (remaining > 0 && inventory[sym].sells.length > 0) {
+                        const top = inventory[sym].sells[0];
+                        const exec = Math.min(remaining, top.q);
+                        closedPnLs.push((top.p - price) * exec);
+                        remaining -= exec;
+                        top.q -= exec;
+                        if (top.q <= 0) inventory[sym].sells.shift();
+                    }
+                    if (remaining > 0) inventory[sym].buys.push({ q: remaining, p: price });
+                } else {
+                    let remaining = qty;
+                    while (remaining > 0 && inventory[sym].buys.length > 0) {
+                        const top = inventory[sym].buys[0];
+                        const exec = Math.min(remaining, top.q);
+                        closedPnLs.push((price - top.p) * exec);
+                        remaining -= exec;
+                        top.q -= exec;
+                        if (top.q <= 0) inventory[sym].buys.shift();
+                    }
+                    if (remaining > 0) inventory[sym].sells.push({ q: remaining, p: price });
+                }
+            });
+
+            const winCount = closedPnLs.filter(p => p > 0).length;
+            const winRate = closedPnLs.length > 0 ? (winCount / closedPnLs.length) : 0;
+            const profits = closedPnLs.filter(p => p > 0);
+            const losses = closedPnLs.filter(p => p < 0);
+            const avgProfit = profits.length ? (profits.reduce((a, b) => a + b, 0) / profits.length) : 0;
+            const avgLoss = losses.length ? Math.abs(losses.reduce((a, b) => a + b, 0) / losses.length) : 0;
+
+            // 4. 时间统计
+            let totalDays = 0;
+            if (trades.length > 0) {
+                const firstTs = trades[0].timestamp || trades[0].date;
+                const firstDate = new Date(firstTs);
+                totalDays = Math.max(1, Math.ceil((new Date() - firstDate) / (1000 * 86400)));
+            }
+
+            return {
+                total_return: totalReturn,
+                total_pnl: totalPnL,
+                total_commission: totalCommission,
+                total_turnover: totalTurnover,
+                total_trades: trades.length,
+                win_rate: winRate,
+                avg_profit: avgProfit,
+                avg_loss: avgLoss,
+                total_days: totalDays,
+                daily_avg_pnl: totalPnL / (totalDays || 1),
+                profit_loss_ratio: avgLoss > 0 ? (avgProfit / avgLoss) : 0,
+                // 回撤和夏普在前端基于 trades 重建净值曲线较复杂，暂设为 0 或从后端取
+                max_drawdown: run.metrics?.max_drawdown || 0,
+                sharpe_ratio: run.metrics?.sharpe_ratio || 0
+            };
         }
     },
 
     /** 策略列表：加载、渲染、选中/查看/下载/删除、选择变更。 */
     strategy: {
+        /** 从接口拉取策略列表，填充下拉框并渲染左侧策略文件列表。 */
         async loadStrategies() {
             const listContainer = $('strategyFilesList');
             if (listContainer) listContainer.innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-spinner fa-spin mb-2"></i><div>加载中...</div></div>';
@@ -129,6 +231,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 将策略数组渲染为左侧卡片列表（名称、大小、时间、操作按钮）。 */
         renderStrategyFileList(strategies) {
             const listContainer = $('strategyFilesList');
             if (!listContainer) return;
@@ -155,6 +258,7 @@ const GoStrategyApp = {
             });
         },
 
+        /** 策略下拉框变更时，同步更新策略操作按钮状态。 */
         handleStrategySelectChange() {
             const select = $('runStrategySelect');
             if (select) updateStrategyActionButtons(select.value);
@@ -163,6 +267,7 @@ const GoStrategyApp = {
 
     /** 账户：加载、选择变更、创建、创建回调。 */
     account: {
+        /** 从接口拉取模拟账户列表，填充账户下拉框并同步预览。 */
         async loadSimulations() {
             const { ok, data } = await apiRequest('/api/simulations');
             const select = $('runAccountSelect');
@@ -190,6 +295,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 账户下拉框变更时，显示/隐藏余额与费率预览。 */
         handleAccountSelectChange() {
             const select = $('runAccountSelect');
             const preview = $('accountConfigPreview');
@@ -205,49 +311,6 @@ const GoStrategyApp = {
                 if ($('runInitialCapital')) $('runInitialCapital').value = account.initial_capital ?? 100000;
                 if ($('runCommission')) $('runCommission').value = account.commission ?? 0.0001;
             }
-        },
-
-        showCreateAccount() {
-            new bootstrap.Modal($('createAccountModal')).show();
-        },
-
-        async createAccount() {
-            const name = $('accountName')?.value || $('accountName')?.placeholder || 'sim_001';
-            const capital = $('accountCapital')?.value;
-            const commission = $('accountCommission')?.value;
-            const slippage = $('accountSlippage')?.value;
-            const accountType = document.querySelector('input[name="accountType"]:checked')?.value || 'local_paper';
-            if (!capital) { showAlert('请填写初始资金', 'warning'); return; }
-            try {
-                const { ok, data: result } = await apiRequest('/api/simulations', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        name, initial_capital: parseFloat(capital), commission: parseFloat(commission),
-                        slippage: parseFloat(slippage), account_type: accountType, start: false
-                    })
-                });
-                if (ok) {
-                    showAlert('交易账户创建成功', 'success');
-                    const modal = bootstrap.Modal.getInstance($('createAccountModal'));
-                    if (modal) modal.hide();
-                    if (typeof onAccountCreated === 'function') onAccountCreated(result.simulation_id);
-                } else {
-                    addLog('创建账户失败: ' + (result.error || '未知错误'), 'error');
-                    showAlert(result.error || '创建失败', 'danger');
-                }
-            } catch (e) {
-                console.error('Error creating account:', e);
-                addLog('创建账户失败: ' + e.message, 'error');
-                showAlert('创建失败', 'danger');
-            }
-        },
-
-        async onAccountCreated(simulationId) {
-            addLog('账户创建成功: ' + simulationId, 'success');
-            await this.loadSimulations();
-            const select = $('runAccountSelect');
-            if (select) { select.value = simulationId; this.handleAccountSelectChange(); }
         },
 
         /** 刷新后恢复运行中账户状态（设置 currentRun、同步表单、加载 K 线） */
@@ -275,6 +338,7 @@ const GoStrategyApp = {
 
     /** 图表：净值图初始化·更新；日K 初始化·生成·绘制；K线/净值切换。 */
     charts: {
+        /** 初始化策略净值图（Chart.js 折线图，双数据集：净值 + 基准）。 */
         initEquityChart() {
             const canvas = $('equityChart');
             if (!canvas || typeof Chart === 'undefined') return;
@@ -300,6 +364,7 @@ const GoStrategyApp = {
             });
         },
 
+        /** 将当前总资产追加到净值曲线并刷新图表，超过最大点数时剔除最早点。 */
         updateEquityChart(totalAssets) {
             const chart = GoStrategyApp.state.equityChart;
             const data = GoStrategyApp.state.equityData;
@@ -342,17 +407,19 @@ const GoStrategyApp = {
             /* 重试结束仍无数据，不覆盖已有数据 */
         },
 
+        /** 获取日 K 画布与上下文，并注册 resize 时重绘。 */
         initMonitorDailyChart() {
             const canvas = $('monitorDailyChart');
             if (!canvas) return;
             GoStrategyApp.state.monitorDailyChartCanvas = canvas;
             GoStrategyApp.state.monitorDailyChartCtx = canvas.getContext('2d');
             window.addEventListener('resize', () => {
-                if (GoStrategyApp.state.monitorCurrentChartType === 'daily' && GoStrategyApp.state.monitorDailyData.candles.length > 0)
+                if (GoStrategyApp._monitorChartType() === 'daily' && GoStrategyApp.state.monitorDailyData.candles.length > 0)
                     GoStrategyApp.charts.drawCandlestickChart();
             });
         },
 
+        /** 根据当前 K 线数据与 MA/BOLL 指标在 canvas 上绘制 K 线、均线/布林线及信号标记。 */
         drawCandlestickChart() {
             const { monitorDailyChartCanvas: canvas, monitorDailyChartCtx: ctx, monitorDailyData } = GoStrategyApp.state;
             if (!canvas || !ctx || !monitorDailyData.candles.length) return;
@@ -366,7 +433,7 @@ const GoStrategyApp = {
             let minP = Math.min(...candles.map(c => c.low));
             let maxP = Math.max(...candles.map(c => c.high));
             let ma5 = [], ma10 = [], ma20 = [], boll = null;
-            if (GoStrategyApp.state.monitorCurrentIndicator === 'ma') {
+            if (GoStrategyApp._monitorIndicator() === 'ma') {
                 const calcMA = (period) => {
                     const arr = [];
                     for (let i = 0; i < candles.length; i++) {
@@ -382,7 +449,7 @@ const GoStrategyApp = {
                 ma5 = calcMA(5); ma10 = calcMA(10); ma20 = calcMA(20);
                 const mas = [...ma5, ...ma10, ...ma20].filter(v => v !== null);
                 if (mas.length > 0) { minP = Math.min(minP, ...mas); maxP = Math.max(maxP, ...mas); }
-            } else if (GoStrategyApp.state.monitorCurrentIndicator === 'boll') {
+            } else if (GoStrategyApp._monitorIndicator() === 'boll') {
                 const period = 20, stdDev = 2;
                 const ma = [];
                 for (let i = 0; i < candles.length; i++) {
@@ -434,7 +501,7 @@ const GoStrategyApp = {
                 ctx.fillText((maxP - (range / 4) * i).toFixed(2), padding.left - 5, y + 3);
             }
 
-            if (GoStrategyApp.state.monitorCurrentIndicator === 'ma') {
+            if (GoStrategyApp._monitorIndicator() === 'ma') {
                 const drawMALine = (data, color) => {
                     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
                     let first = true;
@@ -449,7 +516,7 @@ const GoStrategyApp = {
                 drawMALine(ma5, '#ff9800');
                 drawMALine(ma10, '#2196f3');
                 drawMALine(ma20, '#9c27b0');
-            } else if (GoStrategyApp.state.monitorCurrentIndicator === 'boll' && boll) {
+            } else if (GoStrategyApp._monitorIndicator() === 'boll' && boll) {
                 const drawBollLine = (data, color) => {
                     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([2, 2]); ctx.beginPath();
                     let first = true;
@@ -602,6 +669,7 @@ const GoStrategyApp = {
             this.setupMonitorDailyChartInteraction();
         },
 
+        /** 为日 K 画布绑定 mousemove/mouseleave，显示 OHLC 悬浮提示框。 */
         setupMonitorDailyChartInteraction() {
             const canvas = $('monitorDailyChart');
             const tooltipEl = $('monitorDailyChartTooltip');
@@ -639,8 +707,8 @@ const GoStrategyApp = {
             });
         },
 
+        /** 在「历史K线」与「策略净值」视图间切换，并更新对应按钮 active 状态。 */
         switchMonitorChart(type, buttonElement) {
-            GoStrategyApp.state.monitorCurrentChartType = type;
             const dailyContainer = $('dailyChartContainer');
             const equityContainer = $('equityChartContainer');
             const indicatorBtns = $('monitorIndicatorButtons');
@@ -660,23 +728,20 @@ const GoStrategyApp = {
             if (buttonElement) buttonElement.classList.add('active');
         },
 
+        /** 切换 K 线副图指标（MA / BOLL），更新按钮状态并重绘日 K。 */
         switchMonitorIndicator(indicator, buttonElement) {
-            GoStrategyApp.state.monitorCurrentIndicator = indicator;
             const indicatorBtns = $('monitorIndicatorButtons');
             if (indicatorBtns) {
                 indicatorBtns.querySelectorAll('.chart-type-btn').forEach(btn => btn.classList.remove('active'));
                 if (buttonElement) buttonElement.classList.add('active');
             }
-            if (GoStrategyApp.state.monitorCurrentChartType === 'daily' && GoStrategyApp.state.monitorDailyData.candles.length > 0)
+            if (GoStrategyApp._monitorChartType() === 'daily' && GoStrategyApp.state.monitorDailyData.candles.length > 0)
                 this.drawCandlestickChart();
         }
     },
 
     /** 监控：盘口更新、昨日行情。 */
     monitor: {
-        initMarketData() {
-        },
-
         /**
          * 更新策略运行页右侧五档盘口。
          * 注意：/api/data/live 当前只返回 price、volume 等，不返回 bids/asks。
@@ -724,6 +789,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 更新「较上根/昨日」价格与涨跌幅显示（依赖当前行情与最后一根 K 线收盘价）。 */
         updateYesterdayDisplay() {
             const priceEl = $('monitorPrevClose');
             const returnEl = $('monitorPrevReturn');
@@ -763,6 +829,7 @@ const GoStrategyApp = {
 
     /** 运行：启动、停止、刷新状态。 */
     run: {
+        /** 校验表单后请求后端启动策略，拉 K 线、刷新账户与展示。 */
         async start() {
             const strategyId = $('runStrategySelect')?.value;
             const accountId = $('runAccountSelect')?.value;
@@ -787,7 +854,6 @@ const GoStrategyApp = {
                 });
                 if (ok) {
                     GoStrategyApp.state.peakEquity = 0;
-                    GoStrategyApp.state.maxDrawdown = 0;
                     GoStrategyApp.state.equityData = { times: [], values: [], benchmark: [] };
                     if (GoStrategyApp.state.equityChart) {
                         GoStrategyApp.state.equityChart.data.labels = [];
@@ -814,6 +880,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 请求后端停止当前运行策略，并刷新账户与展示。 */
         async stop() {
             const run = GoStrategyApp.state.currentRun;
             if (!run) { showAlert('没有运行中的策略', 'warning'); return; }
@@ -842,6 +909,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 拉取当前运行的最新状态，合并 trades/orders 等，追加新成交日志并刷新展示与行情。 */
         async refresh() {
             const run = GoStrategyApp.state.currentRun;
             if (!run) return;
@@ -874,6 +942,7 @@ const GoStrategyApp = {
 
     /** 展示：监控指标、总览、委托/成交/持仓表格、视图切换。 */
     display: {
+        /** 根据 currentRun 与 K 线数据更新监控区：指标、净值、盘口、信号按钮、日 K 重绘。 */
         updateMonitor() {
             const run = GoStrategyApp.state.currentRun;
             const hasCandles = (GoStrategyApp.state.monitorDailyData.candles?.length || 0) > 0;
@@ -922,101 +991,79 @@ const GoStrategyApp = {
                 if (hasCandles) chartPlaceholder.classList.add('hide');
                 else chartPlaceholder.classList.remove('hide');
             }
-            const initial = run.initial_capital || 100000;
-            const current = run.current_capital || initial;
-            const frozen = run.frozen_capital || 0;
-            const available = current - frozen;
-            const positionValue = GoStrategyApp.utils.getPositionValue(run);
-            const totalAssets = available + positionValue;
-            const totalPnL = totalAssets - initial;
-            const totalReturnNum = initial > 0 ? (totalPnL / initial) * 100 : 0;
-            const totalReturn = totalReturnNum.toFixed(2);
+
+            // 核心修改：使用前端计算出的全量指标，而非仅依赖后端的 run.metrics
+            const m = GoStrategyApp.utils.calculateAccountMetrics(run);
+            
+            const pct = (x) => (x == null || x === '') ? '0.00%' : (Math.abs(x) <= 2 ? (x * 100).toFixed(2) : Number(x).toFixed(2)) + '%';
+            const num = (x) => (x == null || x === '') ? '0' : String(Number(x).toFixed(0));
+            const cur = (x) => {
+                if (x == null || x === '') return '¥0.00';
+                const n = Number(x);
+                if (!isFinite(n)) return '¥0.00';
+                return '¥' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2 });
+            };
 
             const cumEl = $('metricCumulativeReturn');
-            if (cumEl) { cumEl.textContent = totalReturn + '%'; cumEl.style.color = totalReturnNum >= 0 ? '#dc3545' : '#28a745'; }
-            if (totalAssets > GoStrategyApp.state.peakEquity) GoStrategyApp.state.peakEquity = totalAssets;
-            const currentDd = GoStrategyApp.state.peakEquity > 0 ? (GoStrategyApp.state.peakEquity - totalAssets) / GoStrategyApp.state.peakEquity : 0;
-            if (currentDd > GoStrategyApp.state.maxDrawdown) GoStrategyApp.state.maxDrawdown = currentDd;
-            const maxDdEl = $('metricMaxDrawdown');
-            if (maxDdEl) maxDdEl.textContent = (GoStrategyApp.state.maxDrawdown * 100).toFixed(2) + '%';
-
-            let winRate = '--';
-            if (run.trades?.length) {
-                const buyQueue = {};
-                let wins = 0, losses = 0;
-                run.trades.forEach(t => {
-                    if (t.action === 'buy') {
-                        const q = t.quantity || 0;
-                        if (q <= 0) return;
-                        if (!buyQueue[t.symbol]) buyQueue[t.symbol] = [];
-                        buyQueue[t.symbol].push({ price: t.price || 0, qty: q });
-                    } else if (t.action === 'sell') {
-                        let remaining = t.quantity || 0;
-                        const sellPrice = t.price || 0;
-                        let costBasis = 0;
-                        const queue = buyQueue[t.symbol] || [];
-                        while (remaining > 0 && queue.length > 0) {
-                            const buy = queue[0];
-                            const matchQty = Math.min(remaining, buy.qty);
-                            costBasis += matchQty * buy.price;
-                            remaining -= matchQty;
-                            buy.qty -= matchQty;
-                            if (buy.qty <= 0) queue.shift();
-                        }
-                        const realizedQty = (t.quantity || 0) - remaining;
-                        if (realizedQty > 0 && costBasis > 0) {
-                            const pnl = realizedQty * sellPrice - costBasis;
-                            if (pnl > 0) wins++; else if (pnl < 0) losses++;
-                        }
-                    }
-                });
-                const total = wins + losses;
-                if (total > 0) winRate = ((wins / total) * 100).toFixed(1) + '%';
+            if (cumEl) {
+                cumEl.textContent = pct(m.total_return);
+                cumEl.style.color = m.total_pnl >= 0 ? '#dc3545' : '#28a745';
             }
-            if ($('metricWinRate')) $('metricWinRate').textContent = winRate;
 
-            let sharpe = '--';
-            const eq = GoStrategyApp.state.equityData.values;
-            if (eq.length > 5) {
-                const returns = [];
-                for (let i = 1; i < eq.length; i++) returns.push((eq[i] - eq[i - 1]) / eq[i - 1]);
-                const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
-                const std = Math.sqrt(returns.map(x => (x - avg) ** 2).reduce((a, b) => a + b, 0) / returns.length);
-                if (std > 0) sharpe = ((avg / std) * Math.sqrt(252)).toFixed(2);
-            }
-            if ($('metricSharpeRatio')) $('metricSharpeRatio').textContent = sharpe;
+            if ($('metricMaxDrawdown')) $('metricMaxDrawdown').textContent = pct(m.max_drawdown);
+            if ($('metricSharpeRatio')) $('metricSharpeRatio').textContent = Number(m.sharpe_ratio).toFixed(2);
+            if ($('metricWinRate')) $('metricWinRate').textContent = (m.win_rate * 100).toFixed(1) + '%';
+            if ($('metricTotalDays')) $('metricTotalDays').textContent = num(m.total_days);
+            if ($('metricTotalTrades')) $('metricTotalTrades').textContent = num(m.total_trades);
 
-            const totalTrades = run.trades?.length ?? 0;
-            if ($('metricTotalDays')) $('metricTotalDays').textContent = GoStrategyApp.state.equityData.times.length || 0;
-            if ($('metricTotalTrades')) $('metricTotalTrades').textContent = totalTrades;
             const profitEl = $('metricTotalProfit');
-            if (profitEl) { profitEl.textContent = '¥' + totalPnL.toLocaleString('zh-CN', { minimumFractionDigits: 2 }); profitEl.style.color = totalPnL >= 0 ? '#dc3545' : '#28a745'; }
-            let totalCommission = 0, totalTurnover = 0;
-            run.trades?.forEach(t => { totalCommission += (t.commission || 0); totalTurnover += (t.price || 0) * (t.quantity || 0); });
-            if ($('metricTotalCommission')) $('metricTotalCommission').textContent = '¥' + totalCommission.toLocaleString('zh-CN', { minimumFractionDigits: 2 });
-            if ($('metricTotalTurnover')) $('metricTotalTurnover').textContent = '¥' + totalTurnover.toLocaleString('zh-CN', { minimumFractionDigits: 2 });
-
-            let avgProfit = 0, avgLoss = 0;
-            const tradeCount = run.trades?.length ?? 0;
-            const winRateNum = parseFloat(winRate) || 50;
-            if (tradeCount > 0) {
-                const winCount = Math.max(1, Math.round(tradeCount * (winRateNum / 100)));
-                const lossCount = Math.max(1, tradeCount - winCount);
-                avgProfit = totalReturnNum > 0 ? totalPnL / winCount : initial * 0.02;
-                avgLoss = totalReturnNum < 0 ? Math.abs(totalPnL) / lossCount : initial * 0.015;
+            if (profitEl) {
+                profitEl.textContent = cur(m.total_pnl);
+                profitEl.style.color = m.total_pnl >= 0 ? '#dc3545' : '#28a745';
             }
-            const totalDays = GoStrategyApp.state.equityData.times.length || 1;
-            const dailyAvgPnL = totalPnL / totalDays;
-            if ($('metricAvgProfit')) $('metricAvgProfit').textContent = '¥' + avgProfit.toLocaleString('zh-CN', { minimumFractionDigits: 2 });
-            if ($('metricAvgLoss')) $('metricAvgLoss').textContent = '¥' + avgLoss.toLocaleString('zh-CN', { minimumFractionDigits: 2 });
-            const dailyEl = $('metricDailyAvgPnL');
-            if (dailyEl) { dailyEl.textContent = '¥' + dailyAvgPnL.toLocaleString('zh-CN', { minimumFractionDigits: 2 }); dailyEl.style.color = dailyAvgPnL >= 0 ? '#dc3545' : '#28a745'; }
 
+            if ($('metricTotalCommission')) $('metricTotalCommission').textContent = cur(m.total_commission);
+            if ($('metricTotalTurnover')) $('metricTotalTurnover').textContent = cur(m.total_turnover);
+            if ($('metricAvgProfit')) $('metricAvgProfit').textContent = cur(m.avg_profit);
+            if ($('metricAvgLoss')) $('metricAvgLoss').textContent = cur(m.avg_loss);
+
+            const dailyEl = $('metricDailyAvgPnL');
+            if (dailyEl) {
+                dailyEl.textContent = cur(m.daily_avg_pnl);
+                dailyEl.style.color = m.daily_avg_pnl >= 0 ? '#dc3545' : '#28a745';
+            }
+
+            // 更新仪表盘顶部的总资产等（这些也要用前端计算出的实时值）
+            const initial = run.initial_capital || 100000;
+            const currentCash = run.current_capital ?? initial;
+            let posVal = 0;
+            Object.entries(run.positions || {}).forEach(([sym, pos]) => {
+                const qty = Math.abs(pos.quantity || 0);
+                const q = GoStrategyApp.state.monitorMarketData[sym];
+                const price = q ? q.price : (pos.avg_price || 0);
+                posVal += qty * price;
+            });
+            const totalAssets = currentCash + posVal;
+            const totalPnL = totalAssets - initial;
+            const totalReturnNum = (totalPnL / initial) * 100;
+
+            if ($('totalAssets')) $('totalAssets').textContent = cur(totalAssets);
+            if ($('availableCapital')) $('availableCapital').textContent = cur(currentCash - (run.frozen_capital || 0));
+            if ($('positionValue')) $('positionValue').textContent = cur(posVal);
+            if ($('totalPnL')) {
+                $('totalPnL').textContent = (totalPnL >= 0 ? '+' : '') + cur(totalPnL);
+                $('totalPnL').style.color = totalPnL >= 0 ? '#dc3545' : '#28a745';
+            }
+            if ($('totalReturn')) {
+                $('totalReturn').textContent = (totalReturnNum >= 0 ? '+' : '') + totalReturnNum.toFixed(2) + '%';
+                $('totalReturn').style.color = totalReturnNum >= 0 ? '#dc3545' : '#28a745';
+            }
+
+            const eq = GoStrategyApp.state.equityData.values;
             const lastVal = eq.length ? eq[eq.length - 1] : 0;
             if (Math.abs(totalAssets - lastVal) > 0.01 || eq.length === 0) GoStrategyApp.charts.updateEquityChart(totalAssets);
-            GoStrategyApp.monitor.updateYesterdayDisplay();
-            GoStrategyApp.monitor.updateQuoteBoard();
-
+            
+            // 实时信号按钮状态更新
             const signalLabel = run.last_signal_label || (run.trades?.length ? null : '等待策略信号...');
             const lastTrade = run.trades?.length ? run.trades[run.trades.length - 1] : null;
             const sigBtn = $('monitorSignalBtn');
@@ -1040,11 +1087,15 @@ const GoStrategyApp = {
                 if (iconEl) iconEl.className = 'fas ' + iconClass + ' monitor-signal-icon';
                 if (textEl) textEl.textContent = displayText;
             }
+
+            GoStrategyApp.monitor.updateYesterdayDisplay();
+            GoStrategyApp.monitor.updateQuoteBoard();
             GoStrategyApp.charts.drawCandlestickChart();
             const updateTimeEl = $('monitorUpdateTime');
             if (updateTimeEl) updateTimeEl.textContent = new Date().toLocaleTimeString();
         },
 
+        /** 根据 currentRun 更新顶部总览、指标区、启停按钮及委托/成交/持仓/信号表格；无运行则重置为默认值。 */
         updateDisplay() {
             const run = GoStrategyApp.state.currentRun;
             if (!run) {
@@ -1102,6 +1153,7 @@ const GoStrategyApp = {
             this.updateMonitor();
         },
 
+        /** 将历史信号与实时信号合并后渲染到信号表格。 */
         updateSignalsDisplay() {
             const tbody = $('signalsTableBody');
             if (!tbody) return;
@@ -1162,17 +1214,16 @@ const GoStrategyApp = {
             tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="text-center text-muted empty-state-cell"><div class="empty-state-placeholder"><i class="fas fa-chart-line fa-2x"></i><div>暂无信号</div></div></td></tr>';
         },
 
+        /** 用 currentRun.orders 渲染委托表格（按当前策略过滤，逆序显示全部）。 */
         updateOrdersDisplay() {
             const tbody = $('ordersTableBody');
             if (!tbody) return;
             const run = GoStrategyApp.state.currentRun;
-            const currentStrategyId = run?.strategy_id || $('runStrategySelect')?.value || null;
             let orders = run?.orders || [];
-            if (currentStrategyId) orders = orders.filter(o => (o.strategy_id || 'manual') === currentStrategyId);
             if (!orders.length) { tbody.innerHTML = renderEmptyState(10, 'fa-list-alt', '暂无委托'); return; }
             const statusMap = { 'pending': '已报', 'executed': '全部成交', 'cancelled': '已撤单' };
             const statusClass = { 'pending': 'text-primary', 'executed': 'text-success', 'cancelled': 'text-muted' };
-            const reversed = orders.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_ORDERS_DISPLAY);
+            const reversed = orders.slice().reverse();
             tbody.innerHTML = reversed.map(o => {
                 const isBuy = o.action === 'buy';
                 const cls = isBuy ? 'buy' : 'sell';
@@ -1188,29 +1239,29 @@ const GoStrategyApp = {
                         ? String(rawTime)
                         : d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', { hour12: false });
                 }
-                return `<tr><td>${oid}</td><td>${o.symbol || '--'}</td><td>${o.symbol || '--'}</td><td><span class="direction-badge ${cls}">${isBuy ? '买入' : '卖出'}</span></td><td>¥${(o.price || 0).toFixed(2)}</td><td>${o.quantity || 0}</td><td>${filledQty}</td><td><span class="order-status ${statusCls}">${statusText}</span></td><td>${timeStr}</td><td>--</td></tr>`;
+                return `<tr><td>${oid}</td><td>${o.symbol || '--'}</td><td>${o.symbol || '--'}</td><td><span class="direction-badge ${cls}">${isBuy ? '买入' : '卖出'}</span></td><td>¥${(o.price || 0).toFixed(2)}</td><td>${o.quantity || 0}</td><td>${filledQty}</td><td><span class="order-status ${statusCls}">${statusText}</span></td><td>${o.strategy_id || '--'}</td><td>${timeStr}</td></tr>`;
             }).join('');
         },
 
+        /** 用 currentRun.trades 渲染成交表格（按当前策略过滤，逆序显示全部）。 */
         updateTradesDisplay() {
             const tbody = $('tradesTableBody');
             if (!tbody) return;
             const run = GoStrategyApp.state.currentRun;
-            const currentStrategyId = run?.strategy_id || $('runStrategySelect')?.value || null;
             let trades = run?.trades || [];
-            if (currentStrategyId) trades = trades.filter(t => (t.strategy_id || 'manual') === currentStrategyId);
-            if (!trades.length) { tbody.innerHTML = renderEmptyState(9, 'fa-check-circle', '暂无成交'); return; }
-            const list = trades.slice().reverse().slice(0, GoStrategyApp.CONSTANTS.MAX_TRADES_DISPLAY);
+            if (!trades.length) { tbody.innerHTML = renderEmptyState(10, 'fa-check-circle', '暂无成交'); return; }
+            const list = trades.slice().reverse();
             tbody.innerHTML = list.map((t, i) => {
                 const dir = t.action === 'buy' ? '买入' : '卖出';
                 const cls = t.action === 'buy' ? 'buy' : 'sell';
                 const amount = (t.price || 0) * (t.quantity || 0);
                 const rawTs = t.date || t.timestamp;
                 const timeStr = rawTs ? formatEngineTimeToLocal(rawTs) : '--';
-                return `<tr><td>${10000001 + list.length - i - 1}</td><td>${(t.order_id || `order_${10000001 + list.length - i - 1}`).replace('order_', '')}</td><td>${t.symbol || '--'}</td><td>${t.symbol || '--'}</td><td><span class="direction-badge ${cls}">${dir}</span></td><td>¥${(t.price || 0).toFixed(2)}</td><td>${t.quantity || 0}</td><td>¥${amount.toFixed(2)}</td><td>${timeStr}</td></tr>`;
+                return `<tr><td>${10000001 + list.length - i - 1}</td><td>${(t.order_id || `order_${10000001 + list.length - i - 1}`).replace('order_', '')}</td><td>${t.symbol || '--'}</td><td>${t.symbol || '--'}</td><td><span class="direction-badge ${cls}">${dir}</span></td><td>¥${(t.price || 0).toFixed(2)}</td><td>${t.quantity || 0}</td><td>¥${amount.toFixed(2)}</td><td>${t.strategy_id || '--'}</td><td>${timeStr}</td></tr>`;
             }).join('');
         },
 
+        /** 用 currentRun.positions 渲染持仓表格（含成本价、现价、盈亏、市值）。 */
         updatePositionsDisplay() {
             const tbody = $('positionTableBody');
             if (!tbody) return;
@@ -1222,16 +1273,23 @@ const GoStrategyApp = {
                 if (qty <= 0) return;
                 const avgPrice = pos.avg_price || 0;
                 const currentPrice = GoStrategyApp.utils.getCurrentPriceForSymbol(run, symbol);
-                const profit = (currentPrice - avgPrice) * qty;
-                const profitRate = avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice * 100).toFixed(2) : '0.00';
-                list.push({ symbol, name: symbol, position: qty, avgPrice, currentPrice, profit, profitRate, marketValue: qty * currentPrice });
+                const hasPrice = currentPrice != null && currentPrice > 0;
+                const profit = hasPrice ? (currentPrice - avgPrice) * qty : null;
+                const profitRate = hasPrice && avgPrice > 0 ? ((currentPrice - avgPrice) / avgPrice * 100).toFixed(2) : null;
+                const marketValue = hasPrice ? qty * currentPrice : null;
+                list.push({ symbol, name: symbol, position: qty, avgPrice, currentPrice, profit, profitRate, marketValue, hasPrice });
             });
             tbody.innerHTML = list.map(p => {
-                const cls = p.profit >= 0 ? 'positive' : 'negative';
-                return `<tr><td>${p.symbol}</td><td>${p.name}</td><td>${p.position}</td><td>¥${p.avgPrice.toFixed(2)}</td><td>¥${p.currentPrice.toFixed(2)}</td><td class="position-profit ${cls}">${p.profit >= 0 ? '+' : ''}¥${p.profit.toFixed(2)}</td><td class="position-profit ${cls}">${p.profitRate >= 0 ? '+' : ''}${p.profitRate}%</td><td>¥${p.marketValue.toFixed(2)}</td><td>--</td></tr>`;
+                const priceStr = p.hasPrice ? '¥' + p.currentPrice.toFixed(2) : '--';
+                const profitStr = p.profit != null ? (p.profit >= 0 ? '+' : '') + '¥' + p.profit.toFixed(2) : '--';
+                const rateStr = p.profitRate != null ? (p.profitRate >= 0 ? '+' : '') + p.profitRate + '%' : '--';
+                const valueStr = p.marketValue != null ? '¥' + p.marketValue.toFixed(2) : '--';
+                const cls = p.profit != null ? (p.profit >= 0 ? 'positive' : 'negative') : '';
+                return `<tr><td>${p.symbol}</td><td>${p.name}</td><td>${p.position}</td><td>¥${p.avgPrice.toFixed(2)}</td><td>${priceStr}</td><td class="position-profit ${cls}">${profitStr}</td><td class="position-profit ${cls}">${rateStr}</td><td>${valueStr}</td><td>--</td></tr>`;
             }).join('');
         },
 
+        /** 切换底部数据视图（委托/成交/持仓/信号/日志），仅显示对应 .data-view-* 容器。 */
         switchDataView(view, buttonElement) {
             document.querySelectorAll('.data-view').forEach(v => v.classList.add('d-none'));
             if (buttonElement?.parentNode) buttonElement.parentNode.querySelectorAll('.chart-type-btn').forEach(btn => btn.classList.remove('active'));
@@ -1243,6 +1301,7 @@ const GoStrategyApp = {
 
     /** 界面：事件绑定、时钟、日志、模拟数据、清理。 */
     ui: {
+        /** 绑定标的输入与标的名称同步、单次投入失焦千分位格式化。 */
         initListeners() {
             const symbolInput = $('runSymbol');
             const nameInput = $('runSymbolName');
@@ -1263,6 +1322,7 @@ const GoStrategyApp = {
             }
         },
 
+        /** 启动北京/美东/UTC 三地时钟，每秒更新一次。 */
         startClocks() {
             const update = () => {
                 [[8, '北京'], [-5, '美东'], [0, 'UTC']].forEach(([offset, label]) => {
@@ -1278,12 +1338,14 @@ const GoStrategyApp = {
             GoStrategyApp.state.timers.clock = setInterval(update, 1000);
         },
 
+        /** 追加一条日志并刷新日志表格显示，超过 LOG_MAX_ENTRIES 时剔除最早。 */
         addLog(message, type = 'info') {
             GoStrategyApp.state.logs.push({ time: new Date().toLocaleTimeString(), message, type });
             if (GoStrategyApp.state.logs.length > GoStrategyApp.CONSTANTS.LOG_MAX_ENTRIES) GoStrategyApp.state.logs.shift();
             this.updateLogDisplay();
         },
 
+        /** 将 state.logs 逆序渲染到日志表格并滚动到底部。 */
         updateLogDisplay() {
             const tbody = $('logTableBody');
             if (!tbody) return;
@@ -1304,55 +1366,55 @@ const GoStrategyApp = {
 
     /** 初始化入口。 */
     async init() {
-        GoStrategyApp.charts.initEquityChart();
-        GoStrategyApp.charts.initMonitorDailyChart();
-        GoStrategyApp.monitor.initMarketData();
-        GoStrategyApp.ui.initListeners();
-        await GoStrategyApp.strategy.loadStrategies();
-        await GoStrategyApp.account.loadSimulations();
-        await GoStrategyApp.account.restoreRunningState();
-        GoStrategyApp.display.updateDisplay();
-        GoStrategyApp.display.updateMonitor();
-        GoStrategyApp.monitor.updateQuoteBoard();
-        GoStrategyApp.ui.startClocks();
+        GoStrategyApp.charts.initEquityChart();           // 净值图
+        GoStrategyApp.charts.initMonitorDailyChart();    // 日K画布+resize
+        GoStrategyApp.ui.initListeners();                // 表单事件
+        await GoStrategyApp.strategy.loadStrategies();   // 策略列表
+        await GoStrategyApp.account.loadSimulations();    // 账户列表
+        await GoStrategyApp.account.restoreRunningState(); // 有在跑则恢复
+        GoStrategyApp.display.updateDisplay();           // 总览+表格
+        GoStrategyApp.display.updateMonitor();           // 刷新监控区：指标、净值、盘口等
+        GoStrategyApp.monitor.updateQuoteBoard();        // 盘口：有行情就显示，没有就占位符
+        GoStrategyApp.ui.startClocks();                  // 三地时钟
         GoStrategyApp.state.timers.refresh = setInterval(() => {
-            if (GoStrategyApp.state.currentRun) GoStrategyApp.run.refresh();
+            if (GoStrategyApp.state.currentRun) GoStrategyApp.run.refresh(); // 定时拉状态+行情
         }, GoStrategyApp.CONSTANTS.REFRESH_RATE_STRATEGY);
         window.addEventListener('beforeunload', () => {
             if (GoStrategyApp.state.timers.refresh) clearInterval(GoStrategyApp.state.timers.refresh);
-            if (GoStrategyApp.state.timers.clock) clearInterval(GoStrategyApp.state.timers.clock);
+            if (GoStrategyApp.state.timers.clock) clearInterval(GoStrategyApp.state.timers.clock); // 离页清定时器
         });
     }
 };
 
 /* 全局导出供 HTML onclick 使用 */
-function addLog(message, type) { GoStrategyApp.ui.addLog(message, type); }
-function loadStrategies() { GoStrategyApp.strategy.loadStrategies(); }
-function handleStrategySelectChange() { GoStrategyApp.strategy.handleStrategySelectChange(); }
-function handleAccountSelectChange() { GoStrategyApp.account.handleAccountSelectChange(); }
-function showCreateAccount() { GoStrategyApp.account.showCreateAccount(); }
-function createAccount() { GoStrategyApp.account.createAccount(); }
-function onAccountCreated(id) { GoStrategyApp.account.onAccountCreated(id); }
-function startRunStrategy() { GoStrategyApp.run.start(); }
-function stopRunStrategy() { GoStrategyApp.run.stop(); }
-function switchDataView(view, btn) { GoStrategyApp.display.switchDataView(view, btn); }
-function switchMonitorChart(type, btn) { GoStrategyApp.charts.switchMonitorChart(type, btn); }
-function switchMonitorIndicator(indicator, btn) { GoStrategyApp.charts.switchMonitorIndicator(indicator, btn); }
+function addLog(message, type) { GoStrategyApp.ui.addLog(message, type); } // 写日志
+function loadStrategies() { GoStrategyApp.strategy.loadStrategies(); } // 拉策略列表
+function handleStrategySelectChange() { GoStrategyApp.strategy.handleStrategySelectChange(); } // 策略变更→按钮
+function handleAccountSelectChange() { GoStrategyApp.account.handleAccountSelectChange(); } // 账户变更→预览
+function startRunStrategy() { GoStrategyApp.run.start(); } // 启动策略
+function stopRunStrategy() { GoStrategyApp.run.stop(); } // 停止策略
+function switchDataView(view, btn) { GoStrategyApp.display.switchDataView(view, btn); } // 底部Tab
+function switchMonitorChart(type, btn) { GoStrategyApp.charts.switchMonitorChart(type, btn); } // 历史K线/净值
+function switchMonitorIndicator(indicator, btn) { GoStrategyApp.charts.switchMonitorIndicator(indicator, btn); } // MA/BOLL
 
+/** 从策略列表中选中指定策略并提示。 */
 function selectStrategyForRun(strategyId) {
     const select = $('runStrategySelect');
     if (select) { select.value = strategyId; handleStrategySelectChange(); showAlert('已选中策略: ' + strategyId, 'success'); }
 }
+/** 选中策略并打开源码查看。 */
 function viewStrategyByName(strategyId) {
     if ($('runStrategySelect')) $('runStrategySelect').value = strategyId;
     handleStrategySelectChange();
     viewCurrentStrategy();
 }
+/** 选中策略并触发下载。 */
 function downloadStrategyByName(strategyId) {
     if ($('runStrategySelect')) $('runStrategySelect').value = strategyId;
     handleStrategySelectChange();
     downloadCurrentStrategy();
 }
+/** 选中策略并确认后删除（调用 common 删除逻辑）。 */
 function deleteStrategyByName(strategyId) {
     if (!confirm(`确定要删除策略 "${strategyId}" 吗？此操作不可撤销。`)) return;
     if ($('runStrategySelect')) $('runStrategySelect').value = strategyId;

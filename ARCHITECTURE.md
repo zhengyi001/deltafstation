@@ -32,8 +32,8 @@
   ├── BacktestEngine*       backend/core/backtest_engine.py
   ├── SimulationEngine      backend/core/simulation_engine.py      # 手动交易（tick 撮合）
   ├── StrategyEngine*       backend/core/strategy_engine.py     # 策略自动化（deltafq LiveEngine）
-  ├── simulation_state      backend/core/utils/simulation_state.py  # 停同账户、写入配置
-  └── engine_state          backend/core/utils/engine_state.py      # 引擎 state 构建/恢复、strategy_id 注入
+  ├── sim_persistence    backend/core/utils/sim_persistence.py  # 仿真配置路径、同账户停机持久化
+  └── engine_snapshot    backend/core/utils/engine_snapshot.py  # 引擎快照构建/恢复、订单续号与策略 ID 注入
 
            │  读写文件
            ▼
@@ -69,12 +69,13 @@
   - 封装 `deltafq.live.LiveEngine`，负责策略自动化运行
   - 用于**策略运行**（run/gostrategy 页）：选择策略、标的、周期（1d/1h/5m/1m）后启动
   - 支持 `signal_interval`，K 线图表按所选周期拉取
+  - **绩效指标**：通过 `get_run_metrics` 实时调用 `deltafq` 提供指标计算能力（前端同步实现基于 FIFO 的全量指标统计）
   - 由 `gostrategy_api` 调用，状态从 `StrategyEngine.get_state` / `get_run_info` 获取
 
-- **SimulationStateService**
-  - 停掉同一账户上已有实例（仿真或 LiveEngine），并持久化 state
-  - 供 `gostrategy_api` 在启动策略前调用，避免多引擎冲突
-  - 仿真引擎与策略引擎通过 `engine_state` 共用账户快照（资金/持仓/成交/订单），支持重启接力与 `strategy_id` 打标
+- **sim_persistence / engine_snapshot**
+  - **停机持久化**：`sim_persistence.stop_same_account` 负责在启动新实例前，先安全停止同账户的旧实例并将 state 快照落盘
+  - **快照续号**：`engine_snapshot` 统一快照格式，包含资金、持仓、成交、所有订单，并恢复 `order_counter` 确保 ID 连续
+  - **策略标记**：支持 `strategy_id` 注入，手动交易自动标记为 `manual`，方便区分交易来源
 
 - **策略管理**
   - 策略实现存放在 `data/strategies/*.py`，继承 `deltafq.BaseStrategy`

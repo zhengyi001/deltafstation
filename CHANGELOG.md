@@ -1,15 +1,33 @@
 # DeltaFStation 更新记录 / Changelog
 
+## v0.8.6 （2026-03-06）
+
+**定位**：策略运行绩效指标实时展示、引擎快照与订单续号稳定性增强。
+
+- **引擎持久化与订单续号**
+  - 重构 `engine_snapshot` 工具类：统一 `SimulationEngine` 与 `StrategyEngine` 的快照构建与恢复逻辑，新增 `order_counter` 恢复，确保重启后 `ORD_xxx` 编号连续不冲突。
+  - 优化 `SimulationEngine` 启动流程：确保在恢复状态前网关已正确初始化。
+- **策略绩效监控**
+  - **前端实时计算**：`gostrategy.js` 引入 `calculateAccountMetrics`，基于 FIFO 算法对成交历史进行全量分析，实时刷新胜率、盈亏比、日均盈亏等 8 项核心指标。
+  - **后端能力对齐**：`StrategyEngine` 新增 `get_run_metrics` 接口，使自动化引擎具备与回测引擎一致的绩效评价能力，为夏普比率、最大回撤等复杂指标提供后端支撑。
+  - **数据序列化优化**：增加对 numpy/pandas 等非标准 JSON 类型的递归转换，确保性能数据稳定传输。
+- **GoStrategy 前端增强**
+  - **绩效看板**：新增「策略绩效指标」面板，实时展示累计收益、夏普、回撤等 8 项核心 KPI。
+  - **实时监控**：前端实现指标轮询机制，根据策略运行状态动态更新性能数据。
+- **交易打标与重构**
+  - **手动交易打标**：引入 `inject_strategy_id`，手动下单自动标记为 `manual`，便于在多策略环境下溯源交易来源。
+  - **代码收敛**：移除过时的 `SimulationStateService`，职责归并至 `sim_persistence` 与 `engine_snapshot` 工具模块。
+
+---
+
 ## v0.8.5 （2026-03-03）
 
 **定位**：策略账户状态打通、时间展示统一、补充示例策略与盘口。
 
 - **引擎状态与策略标记**
   - 抽取 `restore_engine_from_state`，SimulationEngine / StrategyEngine 可从 state 快照恢复资金/持仓/成交/订单与订单号；启动前先落盘最新 engine_state 并注入 StrategyEngine，查询时用 `inject_strategy_id` 为 trades/orders 写入 `strategy_id`，便于按策略维度过滤。
-
 - **UI 界面优化**
   - 统一账户展示为 `名称 (ID)`，交易页以「管理账户」为入口并标记运行状态；GoStrategy 仅作为运行入口（默认单次投入 100000），成交/委托时间统一为上海时区日期时间，在无真实盘口时按当前价合成五档避免长期显示 `--`。
-
 - **示例策略与演示账户**
   - 新增 EMA 价格、双均线、RSI、KDJ 四个示例策略，补充常见趋势与震荡场景；更新默认模拟账户 `SIM_0001` 为基于 `A0_Every2BarFlipStrategy` 的 BTC 演示流水，用于展示 `strategy_id` 打标与 engine_state 恢复效果。
 
@@ -40,7 +58,7 @@
 - **核心引擎**
   - `SimulationEngine`：deltafq EventEngine + paper 撮合，state 恢复、订单续号（避免重启后 ORD 从头编号）。
   - `StrategyEngine`：LiveEngine 封装，策略自动化运行；与 SimulationEngine 同一账户互斥。
-  - `engine_state` / `simulation_state`：状态转换、停同账户并持久化。
+  - `engine_snapshot` / `simulation_config`：引擎快照构建/恢复、仿真配置路径与停同账户落盘。
 - **API**
   - `gostrategy_api`：`PUT /<account_id>/strategy` 启动策略、`GET /<account_id>/chart` 拉取 K 线与信号；account_id 通用。
   - `simulation_api`：完整 CRUD、启动/停止、交易/撤单、委托历史合并。

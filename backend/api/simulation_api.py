@@ -1,15 +1,25 @@
 """
 仿真/账户 API
 
-路由方法说明：
-  list_simulations      GET  /api/simulations            返回仿真账户列表。
-  get_simulation_status GET  /api/simulations/<id>        返回指定账户状态（含委托/成交合并）。
-  start_simulation      POST /api/simulations            创建新账户（可选自动启动）。
-  start_existing        POST /api/simulations/<id>/start 从配置启动已有账户。
-  stop_simulation       PUT  /api/simulations/<id>       停止并持久化状态。
-  delete_simulation     DELETE /api/simulations/<id>    删除账户配置与运行实例。
-  execute_trade         POST /api/simulations/<id>/trades 提交限价单。
-  cancel_trade_order    DELETE /api/simulations/<id>/orders/<order_id> 撤销订单。
+同一账户（simulation_id）下 SimulationEngine 与 StrategyEngine 互斥：
+  - 手动交易（trader 页）：SimulationEngine 负责运行，本 API 的 start/execute_trade/cancel 仅操作前者。
+  - 策略运行（gostrategy 页）：StrategyEngine 负责运行，由 gostrategy_api 启动；本 API 仅查询/停止。
+
+路由（按：列表与查询 → 创建与启动 → 停止与删除 → 交易 排序）：
+  list_simulations       GET    /api/simulations                    返回仿真账户列表。
+  get_simulation_status  GET    /api/simulations/<id>                 返回指定账户状态（含委托/成交合并）。
+  start_simulation       POST   /api/simulations                     创建新账户（可选自动启动）。
+  start_existing         POST   /api/simulations/<id>/start          从配置启动已有账户。
+  stop_simulation        PUT    /api/simulations/<id>               停止并持久化状态。
+  delete_simulation      DELETE /api/simulations/<id>                删除账户配置与运行实例。
+  execute_trade          POST   /api/simulations/<id>/trades        提交限价单。
+  cancel_trade_order    DELETE /api/simulations/<id>/orders/<oid>   撤销订单。
+
+辅助方法（内部）：
+  路径与配置  _sim_folder, _config_path
+  ID/名称    _generate_sim_id, _name_exists
+  状态与委托  _apply_state_to_config, _merge_running_orders_into_config, _merge_order_history
+  停机兜底   _stop_others_except
 """
 from flask import Blueprint, request, jsonify
 import os
@@ -19,8 +29,7 @@ from datetime import datetime
 
 from backend.core.simulation_engine import SimulationEngine
 from backend.core.strategy_engine import StrategyEngine
-from backend.core.utils.engine_state import inject_strategy_id
-from backend.core.utils.engine_state import inject_strategy_id
+from backend.core.utils.engine_snapshot import inject_strategy_id
 
 simulation_bp = Blueprint('simulation', __name__)
 
@@ -71,6 +80,13 @@ def _name_exists(name: str) -> bool:
 def _apply_state_to_config(config: dict, state: dict) -> None:
     """将引擎 state 写入 config：以引擎为准覆盖资金/持仓/委托/成交等快照。"""
     config.update(state)
+
+
+def _merge_running_orders_into_config(config: dict, state: dict) -> None:
+    """将运行中引擎的 state 写入 config 并合并委托历史（不写回文件）。"""
+    saved_orders = config.get('orders', [])
+    _apply_state_to_config(config, state)
+    config['orders'] = _merge_order_history(saved_orders, state.get('orders') or [])
 
 
 def _merge_order_history(saved_orders: list, state_orders: list) -> list:
@@ -174,20 +190,16 @@ def get_simulation_status(simulation_id):
     if SimulationEngine.is_running(simulation_id):
         state = SimulationEngine.get_state(simulation_id)
         if state:
-            saved_orders = config.get('orders', [])
-            _apply_state_to_config(config, state)
-            config['orders'] = _merge_order_history(saved_orders, state.get('orders') or [])
+            inject_strategy_id(state, "manual")  # 只补缺失的 ID
+            _merge_running_orders_into_config(config, state)
         config['status'] = 'running'
     elif StrategyEngine.is_running(simulation_id):
         state = StrategyEngine.get_state(simulation_id)
         run_info = StrategyEngine.get_run_info(simulation_id)
         if state:
-            saved_orders = config.get('orders', [])
-            sid = (run_info or {}).get('strategy_id')
-            if sid:
-                inject_strategy_id(state, sid)
-            _apply_state_to_config(config, state)
-            config['orders'] = _merge_order_history(saved_orders, state.get('orders') or [])
+            if run_info and run_info.get('strategy_id'):
+                inject_strategy_id(state, run_info['strategy_id'])
+            _merge_running_orders_into_config(config, state)
         if run_info:
             config['last_signal'] = run_info.get('last_signal')
             config['last_signal_label'] = run_info.get('last_signal_label')
@@ -247,9 +259,8 @@ def start_existing(simulation_id):
     if SimulationEngine.is_running(simulation_id):
         state = SimulationEngine.get_state(simulation_id)
         if state:
-            saved_orders = config.get('orders', [])
-            _apply_state_to_config(config, state)
-            config['orders'] = _merge_order_history(saved_orders, state.get('orders') or [])
+            inject_strategy_id(state, "manual")
+            _merge_running_orders_into_config(config, state)
         config['status'] = 'running'
         return jsonify({'simulation': config})
     _stop_others_except(simulation_id)
@@ -265,9 +276,8 @@ def start_existing(simulation_id):
         json.dump(config, f, ensure_ascii=False, indent=2)
     state = SimulationEngine.get_state(simulation_id)
     if state:
-        saved_orders = config.get('orders', [])
-        _apply_state_to_config(config, state)
-        config['orders'] = _merge_order_history(saved_orders, state.get('orders') or [])
+        inject_strategy_id(state, "manual")
+        _merge_running_orders_into_config(config, state)
     return jsonify({'simulation': config})
 
 
@@ -284,7 +294,7 @@ def stop_simulation(simulation_id):
     if not os.path.exists(_config_path(simulation_id)):
         return jsonify({'error': 'Simulation not found'}), 404
     state = None
-    strategy_id = None
+    strategy_id = None  # "manual" 或当前策略 id，供 inject_strategy_id 写入 trades/orders
     if SimulationEngine.is_running(simulation_id):
         state = SimulationEngine.get_state(simulation_id)
         SimulationEngine.stop(simulation_id)
