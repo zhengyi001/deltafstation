@@ -82,6 +82,15 @@ const AIAssistantApp = {
 
     /** 对话核心模块 */
     chat: {
+        /** 将本地 history 映射为 OpenAI messages */
+        toChatHistory(maxItems = 20) {
+            const hist = AIAssistantApp.state.conversationHistory || [];
+            return hist
+                .slice(-maxItems)
+                .filter(m => m && (m.type === 'user' || m.type === 'assistant') && typeof m.content === 'string')
+                .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+        },
+
         /** 发送用户消息 */
         async sendMessage() {
             const input = AIAssistantApp.state.elements.input;
@@ -103,13 +112,73 @@ const AIAssistantApp = {
             // 2. 显示加载状态
             const loadingId = AIAssistantApp.ui.showLoading();
 
-            // 3. 模拟 AI 响应逻辑
-            setTimeout(() => {
-                const response = AIAssistantApp.chat.generateMockResponse(text);
+            // 3. 调用后端 AI Chat API (stream)
+            try {
+                const res = await fetch('/api/ai/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: text,
+                        context: AIAssistantApp.state.currentContext,
+                        history: AIAssistantApp.chat.toChatHistory(20)
+                    })
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data?.error || 'AI request failed');
+                }
+                if (!res.body) throw new Error('No stream body');
+
+                // 将 loading 气泡替换为可更新的 assistant 消息容器
+                const loadingEl = document.getElementById(loadingId);
+                let contentEl = null;
+                if (loadingEl) {
+                    contentEl = loadingEl.querySelector('.ai-content');
+                    if (contentEl) contentEl.innerHTML = '';
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buf = '';
+                let fullText = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+
+                    // SSE: events separated by \n\n
+                    const parts = buf.split('\n\n');
+                    buf = parts.pop() || '';
+
+                    for (const part of parts) {
+                        const line = part.split('\n').find(l => l.startsWith('data: '));
+                        if (!line) continue;
+                        const dataStr = line.slice(6).trim();
+                        if (dataStr === '[DONE]') continue;
+                        let obj = null;
+                        try { obj = JSON.parse(dataStr); } catch (_) { obj = null; }
+                        if (obj?.error) throw new Error(obj.error);
+                        const delta = obj?.delta || '';
+                        if (!delta) continue;
+                        fullText += delta;
+
+                        if (contentEl) {
+                            contentEl.innerHTML = AIAssistantApp.chat.formatMarkdown(fullText);
+                            AIAssistantApp.ui.scrollToBottom();
+                        }
+                    }
+                }
+
+                // 流结束：把最终文本写入历史（避免中途逐 token 存储）
                 AIAssistantApp.ui.hideLoading(loadingId);
-                AIAssistantApp.chat.addMessage(response.text, 'assistant');
+                AIAssistantApp.chat.addMessage(fullText || '(empty response)', 'assistant');
+            } catch (e) {
+                AIAssistantApp.ui.hideLoading(loadingId);
+                AIAssistantApp.chat.addMessage(`**请求失败：** ${e.message || e}`, 'assistant');
+            } finally {
                 AIAssistantApp.state.elements.sendBtn.disabled = false;
-            }, 800 + Math.random() * 500);
+            }
         },
 
         /** 添加单条消息 */
@@ -164,25 +233,9 @@ const AIAssistantApp = {
             return div.innerHTML;
         },
 
-        /** 生成模拟回复关键词逻辑 */
+        /** 生成模拟回复关键词逻辑（已弃用：保留空实现避免外部误调用） */
         generateMockResponse(message) {
-            const msgLower = message.toLowerCase();
-            const ctx = AIAssistantApp.state.currentContext;
-            
-            // 简单的关键词匹配库
-            const lib = {
-                upload: { kw: ['上传', '数据', 'csv'], res: '**上传数据：** 你可以在侧边栏点击"上传数据"按钮，选择 Date, Open, High... 格式的 CSV 文件。' },
-                strategy: { kw: ['策略', '编写', '代码'], res: '**编写策略：** 继承 `BaseStrategy` 类，在 `on_bar` 方法中实现你的买卖逻辑即可。' },
-                error: { kw: ['错误', '失败', '报错'], res: '**排查建议：** 请检查数据路径是否正确，或者查看控制台 (Live Console) 的详细输出。' }
-            };
-
-            for (const key in lib) {
-                if (lib[key].kw.some(k => msgLower.includes(k))) return { text: lib[key].res };
-            }
-
-            return { 
-                text: `我理解你的问题："${message}"。在当前的 ${AIAssistantApp.context.getName(ctx)} 中，你可以尝试问我关于数据上传或策略逻辑的问题。` 
-            };
+            return { text: `（mock 已关闭）你输入的是：${message}` };
         }
     },
 

@@ -1,5 +1,15 @@
 # DeltaFStation 更新记录 / Changelog
 
+## [0.9.1] - 2026-03-19
+
+### 🚀 AI Agent LLM 层与短期记忆增强（浏览器持久化）
+
+- **LLM 对话能力落地**：实现 `POST /api/ai/chat`（非流式）与 `POST /api/ai/chat/stream`（SSE 流式）两类对话接口，统一请求参数 `message/context/history` 与响应结构
+- **短期记忆（history）**：后端对 `history` 做结构化归一与截断（`max_items` 控制），在 prompt 组装时与 `context` 一起提供给 LLM，避免上下文膨胀
+- **浏览器缓存/持久化**：前端将对话历史写入 `localStorage`（`ai_conversation_history`），刷新页面或停止后端后仍可恢复最近对话
+- **后端路由修复与配置注入**：在 `backend/app.py` 注册 `ai_bp`，并把 `config/config.py` 的 `DEEPSEEK_*` 配置注入 Flask，确保接口可用且模型配置生效
+- **代码优化与清理**：对 `backend/app.py` 做文档注释、导入排序与结构整理；对 `config/config.py` 清理未使用的冗余配置项（保留 `DEEPSEEK_API_KEY` 默认 demo key 以便本地测试）
+
 ## [0.9.0] - 2026-03-17
 
 ### 🚀 AI Agent 核心化重构 (从辅助到核心的范式转变)

@@ -9,10 +9,10 @@
   ├── 手动交易 trading
   ├── 策略运行 run (gostrategy)
   ├── 系统日志 Live Console (基于 SSE 实时同步)
-  └── AI 小助手 (全局组件)
-      ├── 浮标按钮
+  └── AI Agent (全局组件 / 侧边栏)
+      ├── 开关按钮（切换侧边栏显示）
       ├── 聊天窗口
-      └── 智能问答系统
+      └── 对话状态持久化（localStorage / conversationHistory）
 
            │  调用 REST API
            ▼
@@ -22,6 +22,7 @@
   ├── 回测 API        backend/api/backtest_api.py
   ├── 仿真/账户 API   backend/api/simulation_api.py   # 创建、列表、状态、开启、停止、下单
   ├── 策略运行 API    backend/api/gostrategy_api.py   # 启动/停止策略、K 线图表（按 signal_interval）
+  ├── AI Agent API    backend/api/ai_api.py          # LLM 对话（非流式 + SSE 流式）
   └── 日志流 (SSE)    backend/app.py (stdout pipe)
 
            │  业务调用
@@ -112,4 +113,4 @@ requirements.txt  # 依赖
 - **双引擎模式**：`SimulationEngine` 用于手动交易，`StrategyEngine` 用于策略自动运行；同一账户同一时间仅一种模式。
 - **文件即数据库**：数据与结果全部以 CSV / JSON 落在 `data/` 目录，部署简单。
 - **易扩展**：新增策略 = 在 `data/strategies/` 写一个继承 `BaseStrategy` 的类，再通过前端选择即可。
-- **AI 小助手**：纯前端实现，基于关键词匹配的智能问答系统，支持上下文感知和快捷操作。
+- **AI Agent**：前端负责 UI 与对话历史展示/持久化（`localStorage`）；后端通过 LLM（DeepSeek OpenAI-compatible）生成回复，并使用短期 `history` 作为上下文输入（带截断以控制长度）。
