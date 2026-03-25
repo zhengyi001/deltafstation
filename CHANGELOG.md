@@ -1,5 +1,38 @@
 # DeltaFStation 更新记录 / Changelog
 
+## [0.9.2] - 2026-03-23
+
+### 🔧 LLM 通用化与配置精简
+
+- **LLM 客户端通用化**：删除 `deepseek_client.py` 专用实现，新增通用 `llm_client.py`，支持任意 OpenAI 兼容 API（DeepSeek / OpenAI / 通义等），参数由 `config` 统一配置
+- **AI API 收窄**：仅保留 `POST /api/ai/chat/stream` 流式接口，移除非流式 `/api/ai/chat`；简化 system prompt 与 history 处理逻辑
+- **首页重构**：精简 `index.html` 结构，拆出 `index.css` 主页样式与 `_footer.html` 页脚组件，Hero 区与功能卡片布局优化
+- **配置与适配**：`config/config.py` 调整 LLM 相关配置；`_ai_assistant.html`、`ai-assistant.js`、`ai-assistant.css` 适配新流式接口
+
+## [0.9.1] - 2026-03-19
+
+### 🚀 AI Agent LLM 层与短期记忆增强（浏览器持久化）
+
+- **LLM 对话能力落地**：实现 `POST /api/ai/chat`（非流式）与 `POST /api/ai/chat/stream`（SSE 流式）两类对话接口，统一请求参数 `message/context/history` 与响应结构
+- **短期记忆（history）**：后端对 `history` 做结构化归一与截断（`max_items` 控制），在 prompt 组装时与 `context` 一起提供给 LLM，避免上下文膨胀
+- **浏览器缓存/持久化**：前端将对话历史写入 `localStorage`（`ai_conversation_history`），刷新页面或停止后端后仍可恢复最近对话
+- **后端路由修复与配置注入**：在 `backend/app.py` 注册 `ai_bp`，并把 `config/config.py` 的 `DEEPSEEK_*` 配置注入 Flask，确保接口可用且模型配置生效
+- **代码优化与清理**：对 `backend/app.py` 做文档注释、导入排序与结构整理；对 `config/config.py` 清理未使用的冗余配置项（保留 `DEEPSEEK_API_KEY` 默认 demo key 以便本地测试）
+
+## [0.9.0] - 2026-03-17
+
+### 🚀 AI Agent 核心化重构 (从辅助到核心的范式转变)
+本版本标志着 AI Agent 正式从“插件挂件”进化为系统的“原生核心组件”，通过深度嵌入与全局状态同步，构建沉浸式量化协作体验。
+
+- **嵌入式并排布局**：AI 助手升级为固定侧边栏模式，开启时主页面内容自动收缩避让，实现零遮挡的并排协作工作流。
+- **全局状态持久化**：引入对话历史持久化机制，上下文在“回测/交易/主页”间无缝延续，彻底解决页面切换导致的上下文丢失。
+- **导航栏集成入口**：移除右下角悬浮球，顶部 Banner 新增“图标 + AI Agent”专业胶囊按钮，支持实时激活态高亮反馈。
+- **交互极简主义**：侧边栏加宽至 480px 并精简 10+ 项冗余视觉元素，聚焦纯粹交互，完美修复导航栏 15px 缝隙等布局细节。
+- **底层架构升级**：
+    - **JS 模块化**：参考 `gostrategy.js` 重构为模块化对象模式，职责清晰并补充完整中文文档。
+    - **CSS 瘦身**：移除 70% 冗余代码，完成逻辑与样式的模块化解耦。
+    - **资源重组**：GitHub 链接下沉至主页资源卡片，使全局菜单回归业务核心。
+
 ## v0.8.6 （2026-03-06）
 
 **定位**：策略运行绩效指标实时展示、引擎快照与订单续号稳定性增强。
